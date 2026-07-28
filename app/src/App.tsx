@@ -289,6 +289,18 @@ function App() {
           if (bias.confidence > 0) {
             console.debug("[lyra] perception bias:", bias);
           }
+          // Sprint 15: expose behavioral signals for CompanionAgent shift inference
+          const hesitationLevel: "none" | "some" | "many" =
+            (features.abandonedInputs ?? 0) === 0
+              ? "none"
+              : (features.abandonedInputs ?? 0) < 3
+                ? "some"
+                : "many";
+          orchestrator.setPerceptionSignals({
+            skipRatio: features.skipRatio,
+            isBlurred: features.isBlurred,
+            inputHesitation: hesitationLevel,
+          });
           // Sprint 8: rolling audit so ReflectAgent can tune thresholds.
           void insertPerceptionAudit({
             id: `pa-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
