@@ -780,3 +780,37 @@ describe("Orchestrator Sprint 17: shift feedback persistence", () => {
     await expect(orc.onSkip()).resolves.toBeUndefined();
   });
 });
+
+describe("Orchestrator Sprint 19: libraryFeatures for CompanionAgent", () => {
+  it("passes candidateFeatures to companion.choose when libraryFeaturesRepo is provided", async () => {
+    const featuresMap = new Map([
+      ["t1", { track_id: "t1", bpm: 120, energy: 0.5, valence: 0.4 }],
+    ]);
+    const getBatchMock: any = vi.fn(async (_: string[]) => featuresMap);
+    const deps = makeDeps({ libraryFeaturesRepo: { getBatch: getBatchMock } });
+    const orc = new Orchestrator(deps as any);
+    await orc.onUserInput("hi");
+    expect(getBatchMock).toHaveBeenCalledOnce();
+    const chooseArg = (deps.companion.choose as any).mock.calls[0][0];
+    expect(chooseArg.candidateFeatures).toBe(featuresMap);
+  });
+
+  it("passes candidateFeatures=undefined when libraryFeaturesRepo is not provided", async () => {
+    const deps = makeDeps();
+    const orc = new Orchestrator(deps as any);
+    await orc.onUserInput("hi");
+    const chooseArg = (deps.companion.choose as any).mock.calls[0][0];
+    expect(chooseArg.candidateFeatures).toBeUndefined();
+  });
+
+  it("swallows getBatch errors and proceeds without features", async () => {
+    const getBatchMock: any = vi.fn(async () => {
+      throw new Error("db down");
+    });
+    const deps = makeDeps({ libraryFeaturesRepo: { getBatch: getBatchMock } });
+    const orc = new Orchestrator(deps as any);
+    await expect(orc.onUserInput("hi")).resolves.toBeUndefined();
+    const chooseArg = (deps.companion.choose as any).mock.calls[0][0];
+    expect(chooseArg.candidateFeatures).toBeUndefined();
+  });
+});

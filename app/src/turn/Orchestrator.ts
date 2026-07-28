@@ -57,6 +57,11 @@ export type OrchestratorDeps = {
   shiftFeedbackRepo?: {
     insert(f: import("../perception/shiftFeedback").ShiftFeedback): Promise<void>;
   };
+  /** Sprint 19: optional library features repo. If provided, CompanionAgent
+   *  receives real bpm/energy/valence for shift-based ranking. */
+  libraryFeaturesRepo?: {
+    getBatch(ids: string[]): Promise<Map<string, import("../db/repo/libraryFeaturesRepo").LibraryFeatures>>;
+  };
   clock?: () => number;
   idGen?: () => string;
 };
@@ -257,6 +262,11 @@ export class Orchestrator {
     }
 
     const { livingPortrait, topFacts, emotionTimeline } = getMemoryContext();
+    // Sprint 19: fetch libraryFeatures for candidates so shiftRanker uses
+    // real bpm/energy/valence, not just metadata.
+    const candidateFeatures = await (this.deps.libraryFeaturesRepo
+      ?.getBatch(candidates.map((c) => c.id))
+      .catch(() => undefined));
     const chosen = await companion.choose({
       userUtterance,
       currentEmotion: emotion,
@@ -270,6 +280,7 @@ export class Orchestrator {
       emotionTimelineSummary: emotionTimeline
         ? `${emotionTimeline.window} 窗口: pleasure ${emotionTimeline.pleasureTrend}, arousal ${emotionTimeline.arousalTrend}, volatility ${(emotionTimeline.volatility * 100).toFixed(0)}%`
         : undefined,
+      candidateFeatures,
     });
     const song = candidates.find((c) => c.id === chosen.song_id)!;
 
@@ -373,6 +384,10 @@ export class Orchestrator {
         confidence: 0.2,
         source: "emotion-agent-inferred",
       };
+      // Sprint 19: same feature enrichment for proactive path
+      const candidateFeatures = await (this.deps.libraryFeaturesRepo
+        ?.getBatch(candidates.map((c) => c.id))
+        .catch(() => undefined));
       const chosen = await companion.choose({
         userUtterance: "",
         currentEmotion: emotion,
@@ -386,6 +401,7 @@ export class Orchestrator {
         emotionTimelineSummary: emotionTimeline
           ? `${emotionTimeline.window} 窗口: pleasure ${emotionTimeline.pleasureTrend}, arousal ${emotionTimeline.arousalTrend}, volatility ${(emotionTimeline.volatility * 100).toFixed(0)}%`
           : undefined,
+        candidateFeatures,
       });
       const song = candidates.find((c) => c.id === chosen.song_id);
       if (!song) {
