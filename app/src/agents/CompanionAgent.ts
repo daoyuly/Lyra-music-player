@@ -92,6 +92,12 @@ function buildBrief(i: CompanionInput): string {
     parts.push(memoryBlock);
   }
 
+  // Sprint 14 Task 5: long-term emotional arc context
+  if (i.emotionTimelineSummary) {
+    parts.push("");
+    parts.push(`长期情感轨迹: ${i.emotionTimelineSummary}`);
+  }
+
   parts.push("");
   parts.push(`候选歌单(${i.candidates.length} 首):`);
   parts.push(candidateBlock);

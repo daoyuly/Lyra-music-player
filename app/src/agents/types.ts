@@ -21,6 +21,8 @@ export type CompanionInput = {
   skipRatio?: number;
   isBlurred?: boolean;
   inputHesitation?: "none" | "some" | "many";
+  // Sprint 14 Task 5: long-term emotion arc as summary string
+  emotionTimelineSummary?: string;
 };
 
 export type EmotionInput = {
