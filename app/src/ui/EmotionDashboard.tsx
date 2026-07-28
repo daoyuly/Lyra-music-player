@@ -17,6 +17,7 @@ import {
   auditRowsToSnapshots,
 } from "../perception/emotionTimelineFromAudit";
 import type { EmotionSnapshot, EmotionTimelineWindow } from "../perception/emotionTimeline";
+import { ShiftEffectivenessPanel } from "./ShiftEffectivenessPanel";
 
 const WINDOW_OPTIONS: { id: EmotionTimelineWindow; label: string }[] = [
   { id: "7d", label: "7 天" },
@@ -118,6 +119,11 @@ export function EmotionDashboard() {
 
       {/* Recent reasons (last 5) */}
       <RecentReasons rows={rows.slice(0, 5)} />
+
+      {/* Sprint 18: shift effectiveness panel */}
+      <div style={{ marginTop: "1.5rem", borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: "1rem" }}>
+        <ShiftEffectivenessPanel />
+      </div>
     </div>
   );
 }
