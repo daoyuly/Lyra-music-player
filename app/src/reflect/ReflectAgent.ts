@@ -6,6 +6,8 @@ import { REFLECT_SYSTEM_PROMPT } from "./prompt";
 import { routeProvider } from "../agents/route";
 import { writeTrace } from "../reasoning/writeTrace";
 import { parseLooseJson } from "../lib/parseLooseJson";
+import type { ShiftFeedback } from "../perception/shiftFeedback";
+import { computeShiftStats, summarizeShiftStats } from "../perception/shiftFeedback";
 
 /** Compact form of one perception_audit row for the Reflect prompt. */
 export type PerceptionObservation = {
@@ -22,6 +24,8 @@ export type ReflectInput = {
   /** Sprint 8: last N perception_audit summaries for self-tuning. Optional
    *  so existing call sites (tests) don't have to construct it. */
   recentPerception?: PerceptionObservation[];
+  /** Sprint 14: shift recommendation feedback for learning shift effectiveness. */
+  shiftFeedback?: ShiftFeedback[];
 };
 
 export type FactMutation =
@@ -164,6 +168,11 @@ function buildUserMessage(input: ReflectInput): string {
       ? JSON.stringify(input.recentPerception, null, 2)
       : "(暂无)";
 
+  const shiftStatsSummary =
+    input.shiftFeedback && input.shiftFeedback.length > 0
+      ? summarizeShiftStats(computeShiftStats(input.shiftFeedback))
+      : "(暂无)";
+
   return [
     `todayISO: ${input.todayISO}`,
     ``,
@@ -178,6 +187,9 @@ function buildUserMessage(input: ReflectInput): string {
     ``,
     `## 感知层最近观测（用于评估规则敏感度）`,
     perceptionJson,
+    ``,
+    `## Shift 推荐效率（Sprint 14）`,
+    shiftStatsSummary,
   ].join("\n");
 }
 
