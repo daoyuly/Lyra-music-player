@@ -165,6 +165,81 @@ describe("shiftRanker", () => {
     });
   });
 
+  describe("Sprint 15 · libraryFeatures integration", () => {
+    const neutralPad: PAD = { p: 0, a: 0, d: 0 };
+    const lowPad: PAD = { p: -0.3, a: -0.3, d: 0 };
+
+    it("uses real bpm from features over metadata", () => {
+      const track = makeTrack("slow-real", {
+        bpm: 150, // metadata says fast
+      });
+      const features = { track_id: "slow-real", bpm: 60, energy: 0.2, valence: 0.4 };
+      const score = scoreTrackForShift(track, "接住", neutralPad, features);
+      // Should be high for '接住' because real bpm is 60
+      expect(score).toBeGreaterThan(60);
+    });
+
+    it("uses energy from features for '点燃' scoring", () => {
+      const track = makeTrack("energetic", { bpm: 130 });
+      const highEnergy = { track_id: "energetic", bpm: 130, energy: 0.85, valence: 0.7 };
+      const lowEnergy = { track_id: "energetic", bpm: 130, energy: 0.3, valence: 0.4 };
+
+      const highScore = scoreTrackForShift(track, "点燃", neutralPad, highEnergy);
+      const lowScore = scoreTrackForShift(track, "点燃", neutralPad, lowEnergy);
+      expect(highScore).toBeGreaterThan(lowScore);
+    });
+
+    it("uses valence from features for '接住' scoring", () => {
+      const track = makeTrack("neutral-valence", { bpm: 70 });
+      const warmValence = { track_id: "neutral-valence", bpm: 70, energy: 0.3, valence: 0.5 };
+      const coldValence = { track_id: "neutral-valence", bpm: 70, energy: 0.3, valence: 0.1 };
+
+      const warmScore = scoreTrackForShift(track, "接住", neutralPad, warmValence);
+      const coldScore = scoreTrackForShift(track, "接住", neutralPad, coldValence);
+      expect(warmScore).toBeGreaterThan(coldScore);
+    });
+
+    it("'打断' with low-arousal PAD boosts high-energy tracks", () => {
+      const track = makeTrack("high-energy", { bpm: 140 });
+      const highEnergy = { track_id: "high-energy", bpm: 140, energy: 0.85, valence: 0.7 };
+      const score = scoreTrackForShift(track, "打断", lowPad, highEnergy);
+      // Contrast bonus should push above baseline
+      expect(score).toBeGreaterThan(70);
+    });
+
+    it("rankByShift uses features map when provided", () => {
+      const slow = makeTrack("slow-track", {}); // No metadata bpm
+      const fast = makeTrack("fast-track", {});
+      const features = new Map([
+        ["slow-track", { track_id: "slow-track", bpm: 60, energy: 0.2, valence: 0.4 }],
+        ["fast-track", { track_id: "fast-track", bpm: 150, energy: 0.85, valence: 0.7 }],
+      ]);
+
+      const ranked = rankByShift([fast, slow], "接住", neutralPad, features);
+      expect(ranked[0].id).toBe("slow-track"); // Slow should rank first for 接住
+    });
+
+    it("handles null features gracefully (fallback to metadata)", () => {
+      const track = makeTrack("mixed", { bpm: 80, mood: "calm" });
+      const scoreWithNull = scoreTrackForShift(track, "接住", neutralPad, null);
+      const scoreWithout = scoreTrackForShift(track, "接住", neutralPad);
+      expect(scoreWithNull).toBe(scoreWithout);
+    });
+
+    it("handles missing bpm/energy/valence in features", () => {
+      const track = makeTrack("partial", {});
+      const partialFeatures = {
+        track_id: "partial",
+        bpm: null,
+        energy: null,
+        valence: null,
+      };
+      expect(() =>
+        scoreTrackForShift(track, "陪着", neutralPad, partialFeatures),
+      ).not.toThrow();
+    });
+  });
+
   describe("explainScore", () => {
     it("returns human-readable explanation", () => {
       const track = makeTrack("test", { bpm: 100, mood: "calm" });

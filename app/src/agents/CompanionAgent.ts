@@ -148,8 +148,14 @@ export class CompanionAgent {
     const inputHesitation = input.inputHesitation ?? "none";
     const recommendedShift = inferShift(pad, input.currentEmotion.confidence, isBlurred, skipRatio, inputHesitation);
 
-    // Re-rank candidates by shift affinity before LLM sees them
-    const rankedCandidates = rankByShift(input.candidates, recommendedShift, pad);
+    // Re-rank candidates by shift affinity before LLM sees them.
+    // Sprint 15: pass real features (bpm/energy/valence) if provided.
+    const rankedCandidates = rankByShift(
+      input.candidates,
+      recommendedShift,
+      pad,
+      input.candidateFeatures,
+    );
 
     // Use ranked candidates for LLM context (but keep original list for validation)
     const inputWithRanked = { ...input, candidates: rankedCandidates };

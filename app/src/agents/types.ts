@@ -23,6 +23,8 @@ export type CompanionInput = {
   inputHesitation?: "none" | "some" | "many";
   // Sprint 14 Task 5: long-term emotion arc as summary string
   emotionTimelineSummary?: string;
+  // Sprint 15: real bpm/energy/valence per track for shift ranking
+  candidateFeatures?: Map<string, { track_id: string; bpm: number | null; energy: number | null; valence: number | null }>;
 };
 
 export type EmotionInput = {

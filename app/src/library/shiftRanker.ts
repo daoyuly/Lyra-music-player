@@ -3,14 +3,43 @@
  *
  * Given a shift type (接住/点燃/陪着/打断) and user's current PAD,
  * score and re-rank candidate songs so the best matches come first.
- * Ranking uses heuristics based on available metadata (bpm, tags, etc).
  *
- * Sprint 14 Task 3
+ * Sprint 14 Task 3, Sprint 15 Task 1: uses real libraryFeatures data
+ * (bpm/energy/valence) when available, with metadata fallback.
  */
 
 import type { LibraryTrack, PAD } from "../types";
+import type { LibraryFeatures } from "../db/repo/libraryFeaturesRepo";
 
 export type Shift = "接住" | "点燃" | "陪着" | "打断";
+
+/**
+ * Resolve bpm/mood/genre/tags from either features DB or metadata fallback.
+ * Real features table has bpm/energy/valence (0-1). Metadata may have
+ * mood/genre/tags strings from tag scans.
+ */
+function resolveFeatures(track: LibraryTrack, features?: LibraryFeatures | null) {
+  const meta = track.metadata ?? {};
+
+  // BPM: prefer real feature, then metadata, then default
+  const bpm =
+    (features?.bpm ?? null) !== null
+      ? features!.bpm!
+      : typeof meta.bpm === "number"
+        ? meta.bpm
+        : 120;
+
+  // Energy/valence in [0, 1] from features; derive if only metadata exists
+  const energy = features?.energy ?? null;
+  const valence = features?.valence ?? null;
+
+  // Metadata-based heuristics for mood/genre/tags (features lack these)
+  const mood = typeof meta.mood === "string" ? meta.mood : "neutral";
+  const genre = typeof meta.genre === "string" ? meta.genre : "unknown";
+  const tags = Array.isArray(meta.tags) ? meta.tags : [];
+
+  return { bpm, energy, valence, mood, genre, tags };
+}
 
 /**
  * Compute a shift-affinity score for a single track.
@@ -19,22 +48,18 @@ export type Shift = "接住" | "点燃" | "陪着" | "打断";
  * @param track - Candidate track
  * @param shift - Target shift type
  * @param pad - User's current PAD
+ * @param features - Optional LibraryFeatures for real bpm/energy/valence
  * @returns Score in range [0, 100]
  */
 export function scoreTrackForShift(
   track: LibraryTrack,
   shift: Shift,
   pad: PAD,
+  features?: LibraryFeatures | null,
 ): number {
   let score = 50; // Base score (neutral)
 
-  // Extract heuristic features from metadata
-  // In a real system, these would come from TrackFeatures DB
-  const meta = track.metadata ?? {};
-  const bpm = typeof meta.bpm === "number" ? meta.bpm : 120;
-  const mood = typeof meta.mood === "string" ? meta.mood : "neutral";
-  const genre = typeof meta.genre === "string" ? meta.genre : "unknown";
-  const tags = Array.isArray(meta.tags) ? meta.tags : [];
+  const { bpm, energy, valence, mood, genre, tags } = resolveFeatures(track, features);
 
   // 接住 (comfort): low energy, acoustic, calming moods
   if (shift === "接住") {
@@ -85,6 +110,20 @@ export function scoreTrackForShift(
     if (genre === "pop" || genre === "mainstream") score -= 8;
   }
 
+  // Sprint 15: real features (energy/valence) refine the score.
+  // energy/valence are 0-1 normalised — arousal/pleasure proxies.
+  if (energy !== null && Number.isFinite(energy)) {
+    if (shift === "接住" && energy < 0.4) score += 10; // Low energy = comforting
+    if (shift === "点燃" && energy > 0.65) score += 12; // High energy = energizing
+    if (shift === "陪着" && energy >= 0.35 && energy <= 0.7) score += 8; // Balanced
+    if (shift === "打断" && pad.a < 0 && energy > 0.6) score += 10; // Contrast bump
+  }
+  if (valence !== null && Number.isFinite(valence)) {
+    if (shift === "接住" && valence >= 0.3 && valence <= 0.6) score += 8; // Neutral-to-warm valence
+    if (shift === "点燃" && valence > 0.55) score += 10; // Positive valence
+    if (shift === "打断" && pad.p < 0 && valence > 0.5) score += 8; // Uplift contrast
+  }
+
   // Ensure score stays in bounds
   return Math.max(0, Math.min(100, score));
 }
@@ -96,16 +135,18 @@ export function scoreTrackForShift(
  * @param candidates - List of candidate tracks
  * @param shift - Target shift type
  * @param pad - User's current PAD for context
+ * @param featuresById - Optional map of track_id → LibraryFeatures for real bpm/energy/valence
  * @returns Re-ranked candidates
  */
 export function rankByShift(
   candidates: LibraryTrack[],
   shift: Shift,
   pad: PAD,
+  featuresById?: Map<string, LibraryFeatures>,
 ): LibraryTrack[] {
   const scored = candidates.map((track) => ({
     track,
-    score: scoreTrackForShift(track, shift, pad),
+    score: scoreTrackForShift(track, shift, pad, featuresById?.get(track.id) ?? null),
   }));
 
   // Sort by score descending
