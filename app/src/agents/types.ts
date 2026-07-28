@@ -17,6 +17,10 @@ export type CompanionInput = {
   candidates: Pick<LibraryTrack, "id" | "path" | "title" | "artist" | "album" | "duration_ms">[];
   livingPortrait?: string;
   topFacts?: Fact[];
+  // Sprint 14: behavioral signals for shift inference
+  skipRatio?: number;
+  isBlurred?: boolean;
+  inputHesitation?: "none" | "some" | "many";
 };
 
 export type EmotionInput = {

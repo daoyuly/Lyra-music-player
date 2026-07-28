@@ -5,6 +5,7 @@ import { writeTrace } from "../reasoning/writeTrace";
 import { parseLooseJson } from "../lib/parseLooseJson";
 import { songDisplayTitle } from "../library/display";
 import type { ChosenSong, CompanionInput } from "./types";
+import { inferShift, getShiftConfidence } from "./shiftLogic";
 
 const SHIFTS = ["接住", "点燃", "陪着", "打断"] as const;
 type Shift = (typeof SHIFTS)[number];
@@ -61,9 +62,23 @@ function buildBrief(i: CompanionInput): string {
 
   const memoryBlock = buildMemoryBlock(i);
 
+  // Sprint 14: Infer recommended shift based on behavioral signals
+  const skipRatio = i.skipRatio ?? 0;
+  const isBlurred = i.isBlurred ?? false;
+  const inputHesitation = i.inputHesitation ?? "none";
+  const recommendedShift = inferShift(pad, confidence, isBlurred, skipRatio, inputHesitation);
+  const shiftConfidence = getShiftConfidence(
+    pad,
+    confidence,
+    isBlurred,
+    skipRatio,
+    inputHesitation,
+  );
+
   const parts = [
     `用户的话: ${i.userUtterance || "(她/他刚打开 app,还没说话)"}`,
     `此刻情绪: PAD=(p=${pad.p.toFixed(2)}, a=${pad.a.toFixed(2)}, d=${pad.d.toFixed(2)}), labels=[${labels.join(",")}], confidence=${confidence.toFixed(2)}`,
+    `推荐的转变方向: ${recommendedShift} (推导置信度: ${(shiftConfidence * 100).toFixed(0)}%) — 你可以参考这个建议，也可以根据用户说的话调整`,
     `你的灵魂状态:`,
     `- backbone: ${soul.musical_taste_base.backbone}`,
     `- affinity_genres: ${soul.musical_taste_base.affinity_genres.join(", ")}`,
