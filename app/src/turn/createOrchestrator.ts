@@ -4,6 +4,7 @@ import { CompanionAgent } from "../agents/CompanionAgent";
 import { LibraryAgent } from "../agents/LibraryAgent";
 import { createSoulStore } from "./soulStore";
 import * as turnRepo from "../db/repo/turnRepo";
+import * as shiftFeedbackRepo from "../db/repo/shiftFeedbackRepo";
 import { playFile, stopPlayback } from "../audio/player";
 import { registry } from "../providers/registry";
 import { bus as perceptionBus } from "../perception/events";
@@ -50,5 +51,6 @@ export function createDefaultOrchestrator(): Orchestrator | null {
     },
     audio,
     eventBus: perceptionBus,
+    shiftFeedbackRepo: { insert: shiftFeedbackRepo.insert },
   });
 }

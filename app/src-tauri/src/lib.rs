@@ -155,6 +155,12 @@ pub fn run() {
                             sql: include_str!("../migrations/007_weekly_snapshots.sql"),
                             kind: MigrationKind::Up,
                         },
+                        Migration {
+                            version: 8,
+                            description: "shift_feedback table",
+                            sql: include_str!("../migrations/008_shift_feedback.sql"),
+                            kind: MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),

@@ -52,6 +52,11 @@ export type OrchestratorDeps = {
   /** Optional perception event bus — if provided, Orchestrator emits
    * input_submit / skip / complete events for the aggregator. */
   eventBus?: EventBus;
+  /** Sprint 17: optional persister for shift-feedback records. If provided,
+   *  every skip/complete writes a ShiftFeedback row for ReflectAgent. */
+  shiftFeedbackRepo?: {
+    insert(f: import("../perception/shiftFeedback").ShiftFeedback): Promise<void>;
+  };
   clock?: () => number;
   idGen?: () => string;
 };
@@ -79,6 +84,13 @@ export class Orchestrator {
   } = { skipRatio: 0, isBlurred: false, inputHesitation: "none" };
   /** Guard against concurrent fulfillProactive calls. */
   private proactiveInFlight = false;
+  /** Sprint 17: track shift recommendation + start time for the current song. */
+  private currentShiftMeta: {
+    turnId: string;
+    shift: "接住" | "点燃" | "陪着" | "打断";
+    padAtTime: PAD;
+    startedAt: number;
+  } | null = null;
 
   constructor(deps: OrchestratorDeps) {
     this.deps = deps;
@@ -261,9 +273,19 @@ export class Orchestrator {
     });
     const song = candidates.find((c) => c.id === chosen.song_id)!;
 
+    const turnId = idGen();
+    const turnTs = clock();
+    // Sprint 17: capture shift meta so skip/complete can persist feedback
+    this.currentShiftMeta = {
+      turnId,
+      shift: chosen.needed_shift,
+      padAtTime: emotion.pad,
+      startedAt: turnTs,
+    };
+
     const turn: DialogueTurn = {
-      id: idGen(),
-      timestamp: clock(),
+      id: turnId,
+      timestamp: turnTs,
       current_emotion: emotion,
       user_utterance: { modality, content: userUtterance },
       agent_response: { song_id: chosen.song_id, rationale: chosen.rationale },
@@ -464,6 +486,25 @@ export class Orchestrator {
     this.pendingEvents.push({ kind: "listen_progress", ms });
   }
 
+  /** Sprint 17: persist a ShiftFeedback row based on currentShiftMeta. */
+  private recordShiftFeedback(userAction: "complete" | "skip" | "proactive_dismiss"): void {
+    const meta = this.currentShiftMeta;
+    const repo = this.deps.shiftFeedbackRepo;
+    if (!meta || !repo) return;
+    const clock = this.deps.clock ?? Date.now;
+    const now = clock();
+    void repo
+      .insert({
+        turnId: meta.turnId,
+        recommendedShift: meta.shift,
+        userAction,
+        padAtTime: meta.padAtTime,
+        timeToActionMs: Math.max(0, now - meta.startedAt),
+        timestamp: now,
+      })
+      .catch((err) => console.warn("[lyra] shiftFeedback insert failed:", err));
+  }
+
   /** User skipped the song. Fold skip event into current turn. */
   async onSkip(): Promise<void> {
     // Emit perception skip event (best-effort, optional bus).
@@ -477,6 +518,8 @@ export class Orchestrator {
     } catch {
       /* bus errors are non-fatal */
     }
+
+    this.recordShiftFeedback("skip");
 
     this.pendingEvents.push({ kind: "skip" });
     await this.deps.audio.stop();
@@ -518,6 +561,8 @@ export class Orchestrator {
     } catch {
       /* bus errors are non-fatal */
     }
+
+    this.recordShiftFeedback("complete");
 
     // Fold complete event into current turn's reaction
     this.pendingEvents.push({ kind: "complete" });

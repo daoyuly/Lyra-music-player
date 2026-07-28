@@ -6,7 +6,6 @@ import * as perceptionAuditRepo from "../db/repo/perceptionAuditRepo";
 vi.mock("../db/repo/perceptionAuditRepo");
 
 const now = Date.now();
-const DAY = 24 * 60 * 60 * 1000;
 
 function makeRow(id: string, hoursAgo: number, p: number, a: number, d: number, confidence = 0.5) {
   return {

@@ -735,3 +735,48 @@ describe("Orchestrator Sprint 15: perception signals for CompanionAgent", () => 
     expect(chooseArg.emotionTimelineSummary).toBeUndefined();
   });
 });
+
+describe("Orchestrator Sprint 17: shift feedback persistence", () => {
+  it("does nothing when shiftFeedbackRepo is not provided", async () => {
+    const deps = makeDeps();
+    const orc = new Orchestrator(deps as any);
+    await orc.onUserInput("hi");
+    // No repo, so nothing to assert on. Just ensure onSkip doesn't throw.
+    await expect(orc.onSkip()).resolves.toBeUndefined();
+  });
+
+  it("writes a skip feedback record when onSkip is called after onUserInput", async () => {
+    const insertMock: any = vi.fn(async (_: unknown) => {});
+    const deps = makeDeps({ shiftFeedbackRepo: { insert: insertMock } });
+    const orc = new Orchestrator(deps as any);
+    await orc.onUserInput("hi");
+    await orc.onSkip();
+    expect(insertMock).toHaveBeenCalledOnce();
+    const record = insertMock.mock.calls[0][0];
+    expect(record.userAction).toBe("skip");
+    expect(record.recommendedShift).toBeTruthy();
+    expect(record.padAtTime).toBeDefined();
+    expect(record.turnId).toBeTruthy();
+  });
+
+  it("writes a complete feedback record when onSongComplete is called", async () => {
+    const insertMock: any = vi.fn(async (_: unknown) => {});
+    const deps = makeDeps({ shiftFeedbackRepo: { insert: insertMock } });
+    const orc = new Orchestrator(deps as any);
+    await orc.onUserInput("hi");
+    await orc.onSongComplete();
+    expect(insertMock).toHaveBeenCalled();
+    const record = insertMock.mock.calls[0][0];
+    expect(record.userAction).toBe("complete");
+  });
+
+  it("swallows repo errors so playback flow is not broken", async () => {
+    const insertMock = vi.fn(async () => {
+      throw new Error("db down");
+    });
+    const deps = makeDeps({ shiftFeedbackRepo: { insert: insertMock } });
+    const orc = new Orchestrator(deps as any);
+    await orc.onUserInput("hi");
+    await expect(orc.onSkip()).resolves.toBeUndefined();
+  });
+});

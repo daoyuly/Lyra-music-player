@@ -3,9 +3,12 @@ import { serializeMemoryMd } from "../memory/writer";
 import { readMemoryFile, writeMemoryFile } from "../memory/fileIO";
 import { listRecentTurns } from "../db/repo/turnRepo";
 import { listRecent as listRecentPerception } from "../db/repo/perceptionAuditRepo";
+import { listByWindow as listShiftFeedbackWindow } from "../db/repo/shiftFeedbackRepo";
 import { loadSoulState, upsertSoulState } from "../db/repo/soulRepo";
 import { ReflectAgent, type PerceptionObservation } from "./ReflectAgent";
 import { applyReflectResult } from "./apply";
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 const AGENT_ID = "lyra_001";
 
@@ -41,6 +44,9 @@ export async function reflectNow(): Promise<{
     )
     .catch(() => []);
 
+  // 4b. Sprint 17: fetch shift feedback for last 7 days
+  const shiftFeedback = await listShiftFeedbackWindow(Date.now() - SEVEN_DAYS_MS).catch(() => []);
+
   // 5. Run ReflectAgent
   const todayISO = new Date().toISOString().slice(0, 10);
   const agent = new ReflectAgent();
@@ -49,6 +55,7 @@ export async function reflectNow(): Promise<{
     currentMemory,
     todayISO,
     recentPerception,
+    shiftFeedback,
   });
 
   // 6. Apply memory result
