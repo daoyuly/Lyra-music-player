@@ -7,7 +7,6 @@ import {
   summarizeTimeline,
 } from "./emotionTimeline";
 import type { EmotionSnapshot } from "./emotionTimeline";
-import type { PAD } from "../types";
 
 function snap(at: number, p: number, a: number, d: number, confidence = 0.5): EmotionSnapshot {
   return { at, pad: { p, a, d }, confidence };

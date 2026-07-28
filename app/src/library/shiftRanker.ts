@@ -8,17 +8,25 @@
  * (bpm/energy/valence) when available, with metadata fallback.
  */
 
-import type { LibraryTrack, PAD } from "../types";
+import type { PAD } from "../types";
 import type { LibraryFeatures } from "../db/repo/libraryFeaturesRepo";
 
 export type Shift = "接住" | "点燃" | "陪着" | "打断";
+
+/** Minimal track shape shiftRanker needs. Compatible with LibraryTrack and
+ *  Pick subsets (candidates from CompanionInput lack metadata but that's ok). */
+export type RankableTrack = {
+  id: string;
+  title?: string;
+  metadata?: Record<string, unknown>;
+};
 
 /**
  * Resolve bpm/mood/genre/tags from either features DB or metadata fallback.
  * Real features table has bpm/energy/valence (0-1). Metadata may have
  * mood/genre/tags strings from tag scans.
  */
-function resolveFeatures(track: LibraryTrack, features?: LibraryFeatures | null) {
+function resolveFeatures(track: RankableTrack, features?: LibraryFeatures | null) {
   const meta = track.metadata ?? {};
 
   // BPM: prefer real feature, then metadata, then default
@@ -52,7 +60,7 @@ function resolveFeatures(track: LibraryTrack, features?: LibraryFeatures | null)
  * @returns Score in range [0, 100]
  */
 export function scoreTrackForShift(
-  track: LibraryTrack,
+  track: RankableTrack,
   shift: Shift,
   pad: PAD,
   features?: LibraryFeatures | null,
@@ -138,12 +146,12 @@ export function scoreTrackForShift(
  * @param featuresById - Optional map of track_id → LibraryFeatures for real bpm/energy/valence
  * @returns Re-ranked candidates
  */
-export function rankByShift(
-  candidates: LibraryTrack[],
+export function rankByShift<T extends RankableTrack>(
+  candidates: T[],
   shift: Shift,
   pad: PAD,
   featuresById?: Map<string, LibraryFeatures>,
-): LibraryTrack[] {
+): T[] {
   const scored = candidates.map((track) => ({
     track,
     score: scoreTrackForShift(track, shift, pad, featuresById?.get(track.id) ?? null),
@@ -160,7 +168,7 @@ export function rankByShift(
  * (Useful for debugging/tracing)
  */
 export function explainScore(
-  track: LibraryTrack,
+  track: RankableTrack,
   shift: Shift,
   pad: PAD,
 ): string {
