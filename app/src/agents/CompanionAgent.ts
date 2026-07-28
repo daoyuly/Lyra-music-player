@@ -6,6 +6,7 @@ import { parseLooseJson } from "../lib/parseLooseJson";
 import { songDisplayTitle } from "../library/display";
 import type { ChosenSong, CompanionInput } from "./types";
 import { inferShift, getShiftConfidence } from "./shiftLogic";
+import { rankByShift } from "../library/shiftRanker";
 
 const SHIFTS = ["接住", "点燃", "陪着", "打断"] as const;
 type Shift = (typeof SHIFTS)[number];
@@ -134,9 +135,21 @@ export class CompanionAgent {
   }
 
   async choose(input: CompanionInput): Promise<ChosenSong> {
-    const candidateIds = input.candidates.map((c) => c.id);
+    // Sprint 14: Infer shift + rank candidates by affinity
+    const { pad } = input.currentEmotion;
+    const skipRatio = input.skipRatio ?? 0;
+    const isBlurred = input.isBlurred ?? false;
+    const inputHesitation = input.inputHesitation ?? "none";
+    const recommendedShift = inferShift(pad, input.currentEmotion.confidence, isBlurred, skipRatio, inputHesitation);
+
+    // Re-rank candidates by shift affinity before LLM sees them
+    const rankedCandidates = rankByShift(input.candidates, recommendedShift, pad);
+
+    // Use ranked candidates for LLM context (but keep original list for validation)
+    const inputWithRanked = { ...input, candidates: rankedCandidates };
+    const candidateIds = rankedCandidates.map((c) => c.id);
     const idSet = new Set(candidateIds);
-    const brief = buildBrief(input);
+    const brief = buildBrief(inputWithRanked);
     const messages: ChatMessage[] = [
       { role: "system", content: COMPANION_SYSTEM_PROMPT },
       { role: "user", content: brief },
