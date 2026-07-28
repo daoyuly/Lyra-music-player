@@ -28,6 +28,7 @@ import type {
   UsageAggregate,
 } from "../db/repo/llmUsageRepo";
 import { readMemoryFile } from "../memory/fileIO";
+import { EmotionDashboard } from "./EmotionDashboard";
 
 type TabId =
   | "turns"
@@ -35,6 +36,7 @@ type TabId =
   | "salient"
   | "library"
   | "lyrics_emb"
+  | "emotion_dashboard"
   | "perception"
   | "roadmap"
   | "features_req"
@@ -49,6 +51,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "salient", label: "显著时刻" },
   { id: "library", label: "曲库 + 特征" },
   { id: "lyrics_emb", label: "歌词 embedding" },
+  { id: "emotion_dashboard", label: "情绪仪表盘" },
   { id: "perception", label: "感知审计" },
   { id: "roadmap", label: "Roadmap" },
   { id: "features_req", label: "功能请求" },
@@ -199,6 +202,7 @@ export function DataExplorer({
           <LibraryPanel expandedId={expandedRowId} onToggle={toggleRow} />
         )}
         {tab === "lyrics_emb" && <LyricsEmbeddingsPanel />}
+        {tab === "emotion_dashboard" && <EmotionDashboard />}
         {tab === "perception" && (
           <PerceptionAuditPanel expandedId={expandedRowId} onToggle={toggleRow} />
         )}
