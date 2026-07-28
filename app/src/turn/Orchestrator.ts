@@ -71,6 +71,12 @@ export class Orchestrator {
   private pendingEvents: ReactionEvent[] = [];
   /** Latest perception bias — blended into onUserInput emotion when set. */
   private perceptionBias: PerceptionBias | null = null;
+  /** Sprint 15: latest behavioral signals for CompanionAgent shift inference. */
+  private perceptionSignals: {
+    skipRatio: number;
+    isBlurred: boolean;
+    inputHesitation: "none" | "some" | "many";
+  } = { skipRatio: 0, isBlurred: false, inputHesitation: "none" };
   /** Guard against concurrent fulfillProactive calls. */
   private proactiveInFlight = false;
 
@@ -85,6 +91,18 @@ export class Orchestrator {
    */
   setPerceptionBias(bias: PerceptionBias | null): void {
     this.perceptionBias = bias;
+  }
+
+  /**
+   * Sprint 15: update behavioral signals derived from the perception loop.
+   * CompanionAgent uses these for shift inference on next choose().
+   */
+  setPerceptionSignals(signals: {
+    skipRatio: number;
+    isBlurred: boolean;
+    inputHesitation: "none" | "some" | "many";
+  }): void {
+    this.perceptionSignals = signals;
   }
 
   getState(): OrchestratorState {
@@ -226,7 +244,7 @@ export class Orchestrator {
       return;
     }
 
-    const { livingPortrait, topFacts } = getMemoryContext();
+    const { livingPortrait, topFacts, emotionTimeline } = getMemoryContext();
     const chosen = await companion.choose({
       userUtterance,
       currentEmotion: emotion,
@@ -234,6 +252,12 @@ export class Orchestrator {
       candidates,
       livingPortrait,
       topFacts,
+      skipRatio: this.perceptionSignals.skipRatio,
+      isBlurred: this.perceptionSignals.isBlurred,
+      inputHesitation: this.perceptionSignals.inputHesitation,
+      emotionTimelineSummary: emotionTimeline
+        ? `${emotionTimeline.window} 窗口: pleasure ${emotionTimeline.pleasureTrend}, arousal ${emotionTimeline.arousalTrend}, volatility ${(emotionTimeline.volatility * 100).toFixed(0)}%`
+        : undefined,
     });
     const song = candidates.find((c) => c.id === chosen.song_id)!;
 
@@ -320,7 +344,7 @@ export class Orchestrator {
         return;
       }
 
-      const { livingPortrait, topFacts } = getMemoryContext();
+      const { livingPortrait, topFacts, emotionTimeline } = getMemoryContext();
       const emotion: CurrentEmotion = {
         pad,
         labels: [],
@@ -334,6 +358,12 @@ export class Orchestrator {
         candidates,
         livingPortrait,
         topFacts,
+        skipRatio: this.perceptionSignals.skipRatio,
+        isBlurred: this.perceptionSignals.isBlurred,
+        inputHesitation: this.perceptionSignals.inputHesitation,
+        emotionTimelineSummary: emotionTimeline
+          ? `${emotionTimeline.window} 窗口: pleasure ${emotionTimeline.pleasureTrend}, arousal ${emotionTimeline.arousalTrend}, volatility ${(emotionTimeline.volatility * 100).toFixed(0)}%`
+          : undefined,
       });
       const song = candidates.find((c) => c.id === chosen.song_id);
       if (!song) {

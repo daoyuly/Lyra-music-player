@@ -700,3 +700,38 @@ describe("Orchestrator Sprint 4: perception bias blending", () => {
     expect(inputEv.charCount).toBe("hello world".length);
   });
 });
+
+describe("Orchestrator Sprint 15: perception signals for CompanionAgent", () => {
+  it("companion.choose receives default signals when setPerceptionSignals not called", async () => {
+    const deps = makeDeps();
+    const orc = new Orchestrator(deps as any);
+    await orc.onUserInput("hi");
+    const chooseArg = (deps.companion.choose as any).mock.calls[0][0];
+    expect(chooseArg.skipRatio).toBe(0);
+    expect(chooseArg.isBlurred).toBe(false);
+    expect(chooseArg.inputHesitation).toBe("none");
+  });
+
+  it("setPerceptionSignals is passed to companion.choose on next onUserInput", async () => {
+    const deps = makeDeps();
+    const orc = new Orchestrator(deps as any);
+    orc.setPerceptionSignals({
+      skipRatio: 0.7,
+      isBlurred: true,
+      inputHesitation: "many",
+    });
+    await orc.onUserInput("hi");
+    const chooseArg = (deps.companion.choose as any).mock.calls[0][0];
+    expect(chooseArg.skipRatio).toBe(0.7);
+    expect(chooseArg.isBlurred).toBe(true);
+    expect(chooseArg.inputHesitation).toBe("many");
+  });
+
+  it("emotionTimelineSummary is omitted when memory context has no timeline", async () => {
+    const deps = makeDeps();
+    const orc = new Orchestrator(deps as any);
+    await orc.onUserInput("hi");
+    const chooseArg = (deps.companion.choose as any).mock.calls[0][0];
+    expect(chooseArg.emotionTimelineSummary).toBeUndefined();
+  });
+});
