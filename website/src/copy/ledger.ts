@@ -107,4 +107,6 @@ export const FOOTER = {
   },
   githubUrl: 'https://github.com/daoyuly/lyra',
   releasesUrl: 'https://github.com/daoyuly/lyra/releases/latest',
+  guideUrl: '/guide.html',
+  guideLabel: '用户手册',
 } as const;

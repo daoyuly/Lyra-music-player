@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lyra · 用户手册</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;1,400&family=Noto+Serif+SC:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --text: #2b2b2b;
+      --text-soft: #55555a;
+      --text-dim: #8b8b8f;
+      --bg: #faf8f5;
+      --accent: #6d7fbf;
+      --divider: rgba(0, 0, 0, 0.08);
+      --card-bg: rgba(109, 127, 191, 0.05);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+    body {
+      font-family: 'Noto Serif SC', 'Lora', Georgia, serif;
+      line-height: 1.75;
+      font-size: 16px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 80px 32px 120px;
+    }
+    header.doc-header {
+      text-align: center;
+      padding-bottom: 48px;
+      border-bottom: 1px solid var(--divider);
+      margin-bottom: 48px;
+    }
+    header.doc-header h1 {
+      font-size: 40px;
+      font-weight: 400;
+      margin: 0 0 12px;
+      letter-spacing: 0.05em;
+    }
+    header.doc-header .subtitle {
+      font-family: 'Lora', Georgia, serif;
+      font-style: italic;
+      color: var(--text-soft);
+      font-size: 18px;
+      margin: 0;
+    }
+    header.doc-header .back {
+      display: inline-block;
+      margin-top: 24px;
+      font-size: 13px;
+      color: var(--text-dim);
+      text-decoration: none;
+      border-bottom: 1px solid transparent;
+      transition: border-color 200ms ease;
+    }
+    header.doc-header .back:hover { border-color: var(--text-dim); }
+    h2 {
+      font-size: 26px;
+      font-weight: 500;
+      margin: 64px 0 16px;
+      padding-top: 24px;
+      border-top: 1px solid var(--divider);
+      color: var(--text);
+    }
+    h2:first-of-type { border-top: none; padding-top: 0; }
+    h3 {
+      font-size: 20px;
+      font-weight: 500;
+      margin: 40px 0 12px;
+      color: var(--text);
+    }
+    p { margin: 0 0 16px; color: var(--text-soft); }
+    ul, ol { margin: 0 0 16px; padding-left: 28px; color: var(--text-soft); }
+    li { margin: 6px 0; }
+    strong { color: var(--text); font-weight: 500; }
+    em { color: var(--accent); font-style: italic; }
+    a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(109, 127, 191, 0.3); transition: border-color 200ms ease; }
+    a:hover { border-color: var(--accent); }
+    blockquote {
+      margin: 24px 0;
+      padding: 0 0 0 20px;
+      border-left: 3px solid var(--accent);
+      color: var(--text-soft);
+      font-style: italic;
+    }
+    code {
+      font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace;
+      font-size: 0.9em;
+      background: var(--card-bg);
+      padding: 2px 6px;
+      border-radius: 3px;
+      color: var(--text);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--divider);
+    }
+    th {
+      font-weight: 500;
+      color: var(--text-dim);
+      background: var(--card-bg);
+    }
+    hr {
+      border: none;
+      border-top: 1px solid var(--divider);
+      margin: 48px 0;
+    }
+    footer.doc-footer {
+      text-align: center;
+      padding-top: 48px;
+      margin-top: 64px;
+      border-top: 1px solid var(--divider);
+      color: var(--text-dim);
+      font-size: 14px;
+    }
+    footer.doc-footer .tagline {
+      font-family: 'Lora', Georgia, serif;
+      font-style: italic;
+      font-size: 18px;
+      color: var(--text-soft);
+      margin-bottom: 24px;
+    }
+    @media (max-width: 640px) {
+      .container { padding: 48px 20px 80px; }
+      header.doc-header h1 { font-size: 32px; }
+      h2 { font-size: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="doc-header">
+      <h1>Lyra 用户手册</h1>
+      <p class="subtitle">Between the things you say. 未成曲调先有情。</p>
+      <a href="/" class="back">← 回到首页</a>
+    </header>
+
+    <p>Lyra 不是普通的音乐播放器。它是一个<strong>会读你、记你、陪你成长的音乐 agent</strong>。</p>
+
+    <h2>快速开始</h2>
+
+    <h3>1. 首次启动</h3>
+    <p>打开 Lyra 后，会有一个简洁的主界面。第一次使用需要配置：</p>
+    <ol>
+      <li>按 <code>Cmd+,</code>（或点右上齿轮）打开设置。</li>
+      <li><strong>Music library folder</strong>：填入你的音乐文件夹路径（如 <code>/Users/you/Music</code>）。</li>
+      <li><strong>Anthropic API Key</strong> 或 <strong>DeepSeek API Key</strong> 或 <strong>Zhipu API Key</strong>：至少填一个。</li>
+      <li>点保存。Lyra 会扫描曲库并提取音频特征（bpm/energy/valence）。</li>
+    </ol>
+
+    <h3>2. 开始对话</h3>
+    <p>在主界面输入框里对 Lyra 说话，比如"今天有点累"或"想听点新的"。它不会用文字回复——它会<strong>选一首歌回给你</strong>，并在旁边写一句小注告诉你为什么选这首。</p>
+
+    <h2>核心功能</h2>
+
+    <h3>🎵 情绪驱动的推荐</h3>
+    <p>Lyra 会推导你此刻需要<strong>哪种转变方向</strong>：</p>
+    <table>
+      <thead>
+        <tr><th>转变</th><th>含义</th><th>什么时候会推</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>接住</strong></td><td>陪伴、理解、缓解</td><td>你在下沉/犹豫/离线</td></tr>
+        <tr><td><strong>点燃</strong></td><td>激发、能量、打破沉闷</td><td>你能量低但跳过率高</td></tr>
+        <tr><td><strong>陪着</strong></td><td>同频共鸣、跟随节奏</td><td>你状态平稳</td></tr>
+        <tr><td><strong>打断</strong></td><td>打破循环、制造惊喜</td><td>你陷入某种高焦虑循环</td></tr>
+      </tbody>
+    </table>
+    <p>它不会盲目哄你——<em>它会诚实</em>。</p>
+
+    <h3>🧠 15 种感知信号</h3>
+    <p>Lyra 通过窗口事件读懂你的状态：</p>
+    <ul>
+      <li>键盘/鼠标活跃度</li>
+      <li>提交次数、字数、间隔</li>
+      <li>跳过率、完整播放率</li>
+      <li>主动推荐被驳回的次数</li>
+      <li>悬停、滚动、犹豫输入</li>
+      <li>窗口失焦、静默在场时间</li>
+      <li>本地天气（Open-Meteo）</li>
+    </ul>
+
+    <h3>💭 长期情感档案</h3>
+    <p>Lyra 会记住你 7 天 / 30 天 / 1 年的情绪轨迹：</p>
+    <ul>
+      <li><strong>愉悦度趋势</strong>（improving/declining/stable）</li>
+      <li><strong>兴奋度轨迹</strong></li>
+      <li><strong>波动性</strong></li>
+      <li><strong>平均 PAD</strong></li>
+    </ul>
+    <p>它会用这些信息在长期上陪你，而不只是响应此刻。</p>
+
+    <h3>📊 情绪仪表盘</h3>
+    <p>按 <code>Cmd+Shift+D</code> 打开 Data Explorer，切到 <strong>情绪仪表盘</strong> tab：</p>
+    <ul>
+      <li><strong>PAD 时间序列图</strong>（7d / 30d / 1y 可切换）</li>
+      <li><strong>趋势指示器</strong>（↑↓→）+ 波动性百分比</li>
+      <li><strong>最近推理</strong>（Lyra 每次的 bias 依据）</li>
+      <li><strong>Shift 推荐效率</strong>（各种转变的成功率）</li>
+      <li><strong>规则触发热图</strong>（哪些规则被触发得最多）</li>
+    </ul>
+
+    <h3>📖 周报（自动生成）</h3>
+    <p>每周日凌晨 03:14，Lyra 会自动写一封信总结这一周。</p>
+    <ul>
+      <li>用 <code>/week</code> 命令在应用内查看。</li>
+      <li>也可以在设置里配置自动打开。</li>
+    </ul>
+
+    <h2>键盘快捷键</h2>
+    <table>
+      <thead><tr><th>快捷键</th><th>功能</th></tr></thead>
+      <tbody>
+        <tr><td><code>Cmd+,</code></td><td>打开设置</td></tr>
+        <tr><td><code>Cmd+Shift+D</code></td><td>打开 Data Explorer</td></tr>
+        <tr><td><code>Cmd+Shift+R</code></td><td>立即触发反思（Reflect Now）</td></tr>
+        <tr><td><code>Cmd+Shift+P</code></td><td>打开 Roadmap</td></tr>
+        <tr><td><code>Escape</code></td><td>关闭 Modal</td></tr>
+        <tr><td><code>Enter</code> (输入框)</td><td>提交消息</td></tr>
+        <tr><td><code>/help</code></td><td>查看斜杠命令</td></tr>
+        <tr><td><code>/week</code></td><td>打开本周周报</td></tr>
+      </tbody>
+    </table>
+
+    <h2>隐私</h2>
+    <blockquote>Lyra 的核心承诺：<strong>你的行为数据只属于你。</strong></blockquote>
+    <ul>
+      <li>所有感知数据在本地 SQLite 中。</li>
+      <li>4 种 Sprint 13 广谱信号（scroll/hover/hesitation/quiet-presence）经过<strong>粗化</strong>（low/medium/high）后才会发送给 LLM，原始数值永不离开本地。</li>
+      <li>音频特征（bpm/energy/valence）本地提取，只用于本地推荐排序。</li>
+      <li>曲库、听歌历史、情绪快照全部本地存储。</li>
+      <li>LLM 请求会发送对话上下文和情绪状态到你配置的 provider（Anthropic/DeepSeek/Zhipu）。</li>
+    </ul>
+    <p>坐标（用于天气）存储在 macOS Keychain，不写入 SQLite。</p>
+
+    <h2>常见问题</h2>
+
+    <h3>Q: 我没有 API Key 怎么办？</h3>
+    <p>Lyra 需要一个 LLM provider 来选歌。免费选择：</p>
+    <ul>
+      <li><strong>Zhipu GLM-4-Flash</strong>（bigmodel.cn，注册送额度）</li>
+      <li><strong>DeepSeek V3</strong>（deepseek.com）</li>
+    </ul>
+
+    <h3>Q: 推荐感觉不准？</h3>
+    <p>前几十次推荐 Lyra 还在"读懂你"。它会通过：</p>
+    <ul>
+      <li>你的 skip / complete 反馈学习哪种 shift 对你有效</li>
+      <li>感知规则不断累积</li>
+      <li>每周反思更新你的画像</li>
+    </ul>
+    <p>建议至少用一周，让它有机会调整。</p>
+
+    <h3>Q: 情绪仪表盘的 PAD 是什么意思？</h3>
+    <p>PAD = <strong>P</strong>leasure (愉悦度) · <strong>A</strong>rousal (兴奋度) · <strong>D</strong>ominance (支配感)，是心理学中描述情绪状态的三维模型。</p>
+    <p>Lyra 用它作为情绪的量化表达，取值都在 [-1, 1] 之间。</p>
+
+    <h3>Q: 我可以查看 Lyra 在"想什么"吗？</h3>
+    <p>可以。打开 Data Explorer（<code>Cmd+Shift+D</code>）：</p>
+    <ul>
+      <li><strong>推理轨迹</strong>：每个 agent 的 LLM 请求/响应完整记录</li>
+      <li><strong>感知审计</strong>：每 60s 一次的行为快照 + 推理原因</li>
+      <li><strong>情绪仪表盘</strong>：整体状态可视化</li>
+      <li><strong>对话回合</strong>：完整对话历史 + 情绪转变</li>
+    </ul>
+
+    <h2>反馈</h2>
+    <ul>
+      <li>GitHub Issues: <a href="https://github.com/daoyuly/lyra/issues" target="_blank" rel="noopener noreferrer">欢迎报告问题</a></li>
+      <li>Roadmap: 应用内按 <code>Cmd+Shift+P</code> 查看</li>
+    </ul>
+
+    <footer class="doc-footer">
+      <p class="tagline">「用歌回话的朋友」</p>
+      <p><a href="/">回到 Lyra 首页</a> · <a href="https://github.com/daoyuly/lyra" target="_blank" rel="noopener noreferrer">GitHub</a></p>
+    </footer>
+  </div>
+</body>
+</html>

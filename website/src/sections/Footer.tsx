@@ -33,7 +33,11 @@ export const Footer = forwardRef<HTMLElement>((_, ref) => (
       <p style={{ marginTop: 32, fontSize: 13, color: 'var(--text-color-dim)' }}>
         {FOOTER.early}
       </p>
-      <p style={{ marginTop: 48, fontSize: 13 }}>
+      <p style={{ marginTop: 48, fontSize: 13, display: 'flex', gap: 20, justifyContent: 'center' }}>
+        <a href={FOOTER.guideUrl}
+           style={{ color: 'var(--text-color-dim)', textDecoration: 'none' }}>
+          {FOOTER.guideLabel}
+        </a>
         <a href={FOOTER.githubUrl} target="_blank" rel="noopener noreferrer"
            style={{ color: 'var(--text-color-dim)', textDecoration: 'none' }}>
           GitHub
