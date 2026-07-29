@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // Extra time we wait past the declared song duration before assuming the
 // primary Sink::empty() watcher will never fire. Covers decoder tail latency,
@@ -24,6 +24,16 @@ pub enum AudioError {
     Stream(String),
 }
 
+/// Per-playback pause bookkeeping. `since` holds the Instant of the current
+/// pause (None when playing); `accumulated_ms` is the total pause time so far
+/// on this playback. Reset at the start of every `play_file` and consulted by
+/// the duration-fallback watcher so a pause never triggers auto-advance.
+#[derive(Default)]
+struct PauseState {
+    accumulated_ms: u64,
+    since: Option<Instant>,
+}
+
 /// Owns the audio pipeline. `OutputStream` (the `!Send` cpal handle) lives
 /// forever on a dedicated audio thread; only the `Send + Sync`
 /// `OutputStreamHandle` crosses thread boundaries. This keeps the struct
@@ -37,6 +47,8 @@ pub struct AudioPlayer {
     // read this to decide whether their "song finished" observation is
     // still relevant (i.e., the playback wasn't superseded by a new one).
     current_id: Arc<AtomicU64>,
+    // Per-playback pause state. Reset on every `play_file`.
+    paused: Arc<Mutex<PauseState>>,
     // Signal the audio thread to drop the OutputStream and exit.
     shutdown: Option<mpsc::Sender<()>>,
     // Kept so Drop can join the worker before the AudioPlayer disappears.
@@ -79,6 +91,7 @@ impl AudioPlayer {
             handle,
             sink: Arc::new(Mutex::new(None)),
             current_id: Arc::new(AtomicU64::new(0)),
+            paused: Arc::new(Mutex::new(PauseState::default())),
             shutdown: Some(shutdown_tx),
             worker: Some(worker),
         })
@@ -136,6 +149,15 @@ impl AudioPlayer {
             *guard = Some(new_sink);
         }
 
+        // Reset per-playback pause bookkeeping. The old watcher (if any) has
+        // already been invalidated by the id bump; whatever it reads next
+        // will be zeroes but its id check exits first.
+        {
+            let mut ps = self.paused.lock().unwrap();
+            ps.accumulated_ms = 0;
+            ps.since = None;
+        }
+
         // Shared FnOnce slot so both the empty-watcher and the duration
         // fallback race for it; whoever wins take()s the boxed callback,
         // the loser sees None and drops.
@@ -180,17 +202,47 @@ impl AudioPlayer {
         // A hint of 0 means "duration unknown" (metadata read failed); firing
         // the fallback then would truncate short songs at FALLBACK_SLACK_MS,
         // so skip.
+        //
+        // Implemented as a poll loop (not a single sleep) so a pause during
+        // playback defers firing: effective play time excludes both fully
+        // accumulated pauses and the currently-open pause interval.
         if let Some(dur_ms) = duration_hint_ms.filter(|d| *d > 0) {
             let current_id_f = Arc::clone(&self.current_id);
             let cb_f = Arc::clone(&on_complete);
+            let paused_f = Arc::clone(&self.paused);
             let wait_ms = dur_ms.saturating_add(FALLBACK_SLACK_MS);
+            let started = Instant::now();
             thread::spawn(move || {
-                thread::sleep(Duration::from_millis(wait_ms));
-                let taken = cb_f.lock().unwrap().take();
-                if let Some(cb) = taken {
-                    if current_id_f.load(Ordering::SeqCst) == id {
-                        cb(id);
+                loop {
+                    if current_id_f.load(Ordering::SeqCst) != id {
+                        return; // superseded
                     }
+                    let (accumulated, in_pause_ms) = {
+                        let ps = paused_f.lock().unwrap();
+                        let in_pause = ps
+                            .since
+                            .as_ref()
+                            .map(|t| t.elapsed().as_millis() as u64)
+                            .unwrap_or(0);
+                        (ps.accumulated_ms, in_pause)
+                    };
+                    let wall_ms = started.elapsed().as_millis() as u64;
+                    let effective =
+                        wall_ms.saturating_sub(accumulated).saturating_sub(in_pause_ms);
+                    if effective >= wait_ms {
+                        let taken = cb_f.lock().unwrap().take();
+                        if let Some(cb) = taken {
+                            if current_id_f.load(Ordering::SeqCst) == id {
+                                cb(id);
+                            }
+                        }
+                        return;
+                    }
+                    // Sleep until we might reach wait_ms; cap at 500ms so
+                    // resume() is picked up within half a second even after
+                    // a long pause.
+                    let remaining = wait_ms - effective;
+                    thread::sleep(Duration::from_millis(remaining.min(500)));
                 }
             });
         }
@@ -211,6 +263,47 @@ impl AudioPlayer {
     pub fn is_playing(&self) -> bool {
         let guard = self.sink.lock().unwrap();
         guard.as_ref().map_or(false, |s| !s.empty() && !s.is_paused())
+    }
+
+    /// Pause the current playback. No-op when nothing is loaded or already
+    /// paused. Does NOT bump `current_id`, so both watcher threads stay
+    /// armed; the fallback watcher explicitly excludes paused time from
+    /// its "song should be over" comparison so it never fires early.
+    pub fn pause(&self) {
+        let guard = self.sink.lock().unwrap();
+        let Some(sink) = guard.as_ref() else { return };
+        if sink.is_paused() {
+            return;
+        }
+        sink.pause();
+        let mut ps = self.paused.lock().unwrap();
+        if ps.since.is_none() {
+            ps.since = Some(Instant::now());
+        }
+    }
+
+    /// Resume a paused playback. No-op when nothing is loaded or not paused.
+    /// Adds the elapsed pause interval to `accumulated_ms` so the fallback
+    /// watcher's effective-time calculation stays honest across many
+    /// pause/resume cycles.
+    pub fn resume(&self) {
+        let guard = self.sink.lock().unwrap();
+        let Some(sink) = guard.as_ref() else { return };
+        if !sink.is_paused() {
+            return;
+        }
+        sink.play();
+        let mut ps = self.paused.lock().unwrap();
+        if let Some(t) = ps.since.take() {
+            ps.accumulated_ms = ps
+                .accumulated_ms
+                .saturating_add(t.elapsed().as_millis() as u64);
+        }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        let guard = self.sink.lock().unwrap();
+        guard.as_ref().map_or(false, |s| s.is_paused())
     }
 }
 

@@ -172,6 +172,70 @@ fn duration_hint_of_zero_is_treated_as_no_hint() {
 }
 
 #[test]
+fn pause_resume_toggles_is_paused_and_is_playing() {
+    let p = AudioPlayer::new().unwrap();
+    p.play_file(&fixture("silence_1s.wav"), None, noop_complete).unwrap();
+    // Give the sink a beat to start actually producing samples before we
+    // assert on state — is_playing checks !empty which needs the first
+    // decode to have landed.
+    sleep(Duration::from_millis(100));
+    assert!(p.is_playing());
+    assert!(!p.is_paused());
+
+    p.pause();
+    assert!(p.is_paused());
+    assert!(!p.is_playing(), "paused sink must not report as playing");
+
+    // Idempotent: pause a second time is a no-op.
+    p.pause();
+    assert!(p.is_paused());
+
+    p.resume();
+    assert!(!p.is_paused());
+    assert!(p.is_playing());
+
+    // Resume when not paused is also a no-op.
+    p.resume();
+    assert!(!p.is_paused());
+}
+
+#[test]
+fn pause_defers_duration_fallback_completion() {
+    // With a 100ms duration hint, the fallback would fire at ~850ms.
+    // If we pause immediately and stay paused past that deadline, the
+    // callback must NOT fire — otherwise the frontend would auto-advance
+    // to a new song while the user has explicitly paused.
+    let p = AudioPlayer::new().unwrap();
+    let fired = Arc::new(Mutex::new(false));
+    let fired_c = Arc::clone(&fired);
+
+    p.play_file(&fixture("silence_1s.wav"), Some(100), move |_| {
+        *fired_c.lock().unwrap() = true;
+    })
+    .expect("play should succeed");
+
+    p.pause();
+    // Sleep past the fallback deadline (100 + 750 = 850ms).
+    sleep(Duration::from_millis(1500));
+    assert!(
+        !*fired.lock().unwrap(),
+        "duration fallback must not fire while playback is paused"
+    );
+
+    // After resume, effective time must grow by wait_ms (100 + 750 = 850ms)
+    // before the fallback fires. The poll loop caps sleeps at 500ms, so
+    // worst case: poll just went to sleep at resume-time → wakes 500ms
+    // later with effective=500 (needs 350 more) → sleeps 350ms → fires at
+    // resume+850ms. Wait 1500ms to absorb OS scheduling jitter on top.
+    p.resume();
+    sleep(Duration::from_millis(1500));
+    assert!(
+        *fired.lock().unwrap(),
+        "fallback should fire once effective play time catches up after resume"
+    );
+}
+
+#[test]
 fn superseding_play_file_suppresses_old_completion_callback() {
     let p = AudioPlayer::new().unwrap();
     let old_fired = Arc::new(Mutex::new(false));

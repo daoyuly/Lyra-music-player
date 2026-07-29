@@ -46,6 +46,23 @@ async fn audio_is_playing(state: State<'_, AppState>) -> Result<bool, String> {
 }
 
 #[tauri::command]
+async fn audio_pause(state: State<'_, AppState>) -> Result<(), String> {
+    state.audio.pause();
+    Ok(())
+}
+
+#[tauri::command]
+async fn audio_resume(state: State<'_, AppState>) -> Result<(), String> {
+    state.audio.resume();
+    Ok(())
+}
+
+#[tauri::command]
+async fn audio_is_paused(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.audio.is_paused())
+}
+
+#[tauri::command]
 async fn secret_set(key: String, value: String) -> Result<(), String> {
     secrets::set_secret(&key, &value).map_err(|e| e.to_string())
 }
@@ -188,6 +205,9 @@ pub fn run() {
             audio_play,
             audio_stop,
             audio_is_playing,
+            audio_pause,
+            audio_resume,
+            audio_is_paused,
             secret_set,
             secret_get,
             secret_delete,

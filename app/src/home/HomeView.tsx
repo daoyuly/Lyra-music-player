@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { pausePlayback, resumePlayback } from "../audio/player";
 import { AmbientBackground } from "./AmbientBackground";
 import { BackgroundPhoto } from "./BackgroundPhoto";
 import { ShanShuiCanvas } from "./ShanShuiCanvas";
@@ -126,12 +127,35 @@ function LiveHomeView({
     }
   }, [state.kind]);
 
+  // Track pause locally so Space can toggle without an extra IPC round-trip.
+  // Reset whenever the playing song changes — a fresh track always starts
+  // unpaused on the Rust side (play_file zeroes the pause bookkeeping).
+  const [isPausedLocal, setIsPausedLocal] = useState(false);
+  useEffect(() => {
+    setIsPausedLocal(false);
+  }, [playingSongId]);
+
+  // Ref pattern so the keydown binding doesn't rebind on every state tick.
+  const togglePlaybackRef = useRef<() => void>(() => {});
+  togglePlaybackRef.current = () => {
+    if (state.kind !== "playing") return;
+    if (isPausedLocal) {
+      setIsPausedLocal(false);
+      void resumePlayback().catch((e) =>
+        console.warn("[lyra] resumePlayback failed:", e),
+      );
+    } else {
+      setIsPausedLocal(true);
+      void pausePlayback().catch((e) =>
+        console.warn("[lyra] pausePlayback failed:", e),
+      );
+    }
+  };
+
   useEffect(() => {
     return bindGlobalKeys({
       onOpenSettings,
-      onTogglePlayback: () => {
-        console.log("[lyra] toggle playback");
-      },
+      onTogglePlayback: () => togglePlaybackRef.current(),
     });
   }, [onOpenSettings]);
 

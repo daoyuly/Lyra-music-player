@@ -11,7 +11,15 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: (...args: unknown[]) => listenMock(...args),
 }));
 
-import { playFile, stopPlayback, isPlaying, onSongComplete } from "./player";
+import {
+  playFile,
+  stopPlayback,
+  isPlaying,
+  onSongComplete,
+  pausePlayback,
+  resumePlayback,
+  isPaused,
+} from "./player";
 
 beforeEach(() => {
   invokeMock.mockReset();
@@ -48,6 +56,24 @@ describe("audio/player", () => {
     invokeMock.mockResolvedValueOnce(true);
     await expect(isPlaying()).resolves.toBe(true);
     expect(invokeMock).toHaveBeenCalledWith("audio_is_playing");
+  });
+
+  it("pausePlayback calls audio_pause", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    await pausePlayback();
+    expect(invokeMock).toHaveBeenCalledWith("audio_pause");
+  });
+
+  it("resumePlayback calls audio_resume", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+    await resumePlayback();
+    expect(invokeMock).toHaveBeenCalledWith("audio_resume");
+  });
+
+  it("isPaused returns boolean from audio_is_paused", async () => {
+    invokeMock.mockResolvedValueOnce(true);
+    await expect(isPaused()).resolves.toBe(true);
+    expect(invokeMock).toHaveBeenCalledWith("audio_is_paused");
   });
 
   it("playFile propagates errors from Rust", async () => {

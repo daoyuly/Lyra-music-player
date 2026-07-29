@@ -30,6 +30,25 @@ export async function isPlaying(): Promise<boolean> {
 }
 
 /**
+ * Pause the current playback. Safe to call when nothing is playing or when
+ * already paused — Rust treats it as a no-op. Duration-based auto-advance
+ * is deferred for as long as playback stays paused; `onSongComplete`
+ * subscribers won't observe a spurious completion.
+ */
+export async function pausePlayback(): Promise<void> {
+  await invoke("audio_pause");
+}
+
+/** Resume a paused playback. No-op when not paused or nothing is loaded. */
+export async function resumePlayback(): Promise<void> {
+  await invoke("audio_resume");
+}
+
+export async function isPaused(): Promise<boolean> {
+  return await invoke<boolean>("audio_is_paused");
+}
+
+/**
  * Subscribe to natural song-completion events from the Rust audio thread.
  * The callback receives the playback id that finished. Returns an
  * unsubscribe function.
