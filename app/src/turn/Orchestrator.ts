@@ -261,26 +261,13 @@ export class Orchestrator {
       return;
     }
 
-    const { livingPortrait, topFacts, emotionTimeline } = getMemoryContext();
-    // Sprint 19: fetch libraryFeatures for candidates so shiftRanker uses
-    // real bpm/energy/valence, not just metadata.
-    const candidateFeatures = await (this.deps.libraryFeaturesRepo
-      ?.getBatch(candidates.map((c) => c.id))
-      .catch(() => undefined));
+    const ctx = await this.buildCompanionContext(candidates.map((c) => c.id));
     const chosen = await companion.choose({
       userUtterance,
       currentEmotion: emotion,
       soul,
       candidates,
-      livingPortrait,
-      topFacts,
-      skipRatio: this.perceptionSignals.skipRatio,
-      isBlurred: this.perceptionSignals.isBlurred,
-      inputHesitation: this.perceptionSignals.inputHesitation,
-      emotionTimelineSummary: emotionTimeline
-        ? `${emotionTimeline.window} 窗口: pleasure ${emotionTimeline.pleasureTrend}, arousal ${emotionTimeline.arousalTrend}, volatility ${(emotionTimeline.volatility * 100).toFixed(0)}%`
-        : undefined,
-      candidateFeatures,
+      ...ctx,
     });
     const song = candidates.find((c) => c.id === chosen.song_id)!;
 
@@ -377,31 +364,19 @@ export class Orchestrator {
         return;
       }
 
-      const { livingPortrait, topFacts, emotionTimeline } = getMemoryContext();
       const emotion: CurrentEmotion = {
         pad,
         labels: [],
         confidence: 0.2,
         source: "emotion-agent-inferred",
       };
-      // Sprint 19: same feature enrichment for proactive path
-      const candidateFeatures = await (this.deps.libraryFeaturesRepo
-        ?.getBatch(candidates.map((c) => c.id))
-        .catch(() => undefined));
+      const ctx = await this.buildCompanionContext(candidates.map((c) => c.id));
       const chosen = await companion.choose({
         userUtterance: "",
         currentEmotion: emotion,
         soul,
         candidates,
-        livingPortrait,
-        topFacts,
-        skipRatio: this.perceptionSignals.skipRatio,
-        isBlurred: this.perceptionSignals.isBlurred,
-        inputHesitation: this.perceptionSignals.inputHesitation,
-        emotionTimelineSummary: emotionTimeline
-          ? `${emotionTimeline.window} 窗口: pleasure ${emotionTimeline.pleasureTrend}, arousal ${emotionTimeline.arousalTrend}, volatility ${(emotionTimeline.volatility * 100).toFixed(0)}%`
-          : undefined,
-        candidateFeatures,
+        ...ctx,
       });
       const song = candidates.find((c) => c.id === chosen.song_id);
       if (!song) {
@@ -500,6 +475,38 @@ export class Orchestrator {
   /** Record listen progress — keeps running maximum of ms listened. */
   onListenProgress(ms: number): void {
     this.pendingEvents.push({ kind: "listen_progress", ms });
+  }
+
+  /** Sprint 20: assemble the perception/memory/feature context that both
+   *  companion.choose call sites need. Keeps the two paths in sync. */
+  private async buildCompanionContext(
+    candidateIds: string[],
+  ): Promise<{
+    livingPortrait: string | undefined;
+    topFacts: import("../memory/types").Fact[] | undefined;
+    skipRatio: number;
+    isBlurred: boolean;
+    inputHesitation: "none" | "some" | "many";
+    emotionTimelineSummary: string | undefined;
+    candidateFeatures:
+      | Map<string, import("../db/repo/libraryFeaturesRepo").LibraryFeatures>
+      | undefined;
+  }> {
+    const { livingPortrait, topFacts, emotionTimeline } = getMemoryContext();
+    const candidateFeatures = await (this.deps.libraryFeaturesRepo
+      ?.getBatch(candidateIds)
+      .catch(() => undefined));
+    return {
+      livingPortrait,
+      topFacts,
+      skipRatio: this.perceptionSignals.skipRatio,
+      isBlurred: this.perceptionSignals.isBlurred,
+      inputHesitation: this.perceptionSignals.inputHesitation,
+      emotionTimelineSummary: emotionTimeline
+        ? `${emotionTimeline.window} 窗口: pleasure ${emotionTimeline.pleasureTrend}, arousal ${emotionTimeline.arousalTrend}, volatility ${(emotionTimeline.volatility * 100).toFixed(0)}%`
+        : undefined,
+      candidateFeatures,
+    };
   }
 
   /** Sprint 17: persist a ShiftFeedback row based on currentShiftMeta. */
