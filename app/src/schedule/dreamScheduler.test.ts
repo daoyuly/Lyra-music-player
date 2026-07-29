@@ -473,4 +473,49 @@ describe("DreamScheduler weekly hook", () => {
     expect(runReflect).toHaveBeenCalledTimes(1);
     s.stop();
   });
+
+  it("independent weeklyTimeHHMM fires at its own time on Sunday, not at dailyTime", async () => {
+    // Sunday 03:14 → reflect only, NOT weekly (weekly is 09:00)
+    let now = new Date("2026-07-05T03:14:00"); // Sunday
+    const runReflect = vi.fn(async () => {});
+    const runWeekly = vi.fn(async () => {});
+    const s = new DreamScheduler({
+      dailyTimeHHMM: "03:14",
+      weeklyTimeHHMM: "09:00",
+      idleMinutes: 0,
+      runReflect,
+      runWeekly,
+      clock: () => now,
+      onActivityListen: () => () => {},
+    });
+    s.start();
+    await (s as any)._tick();
+    expect(runReflect).toHaveBeenCalledTimes(1);
+    expect(runWeekly).not.toHaveBeenCalled();
+
+    // Advance to Sunday 09:00 → weekly fires
+    now = new Date("2026-07-05T09:00:00");
+    await (s as any)._tick();
+    expect(runWeekly).toHaveBeenCalledTimes(1);
+    s.stop();
+  });
+
+  it("weeklyTimeHHMM absent falls back to dailyTimeHHMM (backwards compatible)", async () => {
+    const sunday = new Date("2026-07-05T03:14:00");
+    const runReflect = vi.fn(async () => {});
+    const runWeekly = vi.fn(async () => {});
+    const s = new DreamScheduler({
+      dailyTimeHHMM: "03:14",
+      // weeklyTimeHHMM intentionally omitted
+      idleMinutes: 0,
+      runReflect,
+      runWeekly,
+      clock: () => sunday,
+      onActivityListen: () => () => {},
+    });
+    s.start();
+    await (s as any)._tick();
+    expect(runWeekly).toHaveBeenCalledTimes(1);
+    s.stop();
+  });
 });

@@ -9,7 +9,7 @@ type EmbeddingChoice = "" | "zhipu" | "openai";
 export type SettingsProps = {
   open: boolean;
   onClose: () => void;
-  onSchedulerUpdate?: (dailyTime: string, idleMinutes: number) => void;
+  onSchedulerUpdate?: (dailyTime: string, idleMinutes: number, weeklyTime: string) => void;
 };
 
 export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
@@ -19,6 +19,7 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
   const [zhipu, setZhipu] = useState("");
   const [dreamDailyTime, setDreamDailyTime] = useState("03:14");
   const [dreamIdleMinutes, setDreamIdleMinutes] = useState("30");
+  const [weeklyTime, setWeeklyTime] = useState("09:00");
   const [perceptionEnabled, setPerceptionEnabled] = useState(true);
   const [perceptionMode, setPerceptionMode] = useState<"rule" | "llm">("rule");
   const [weatherEnabled, setWeatherEnabled] = useState(true);
@@ -39,7 +40,7 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
     if (!open) return;
     let cancelled = false;
     (async () => {
-      const [a, d, z, lib, dt, dim, pe, pm, ep, zek, ok, wd, wa, we, wlat, wlon] = await Promise.all([
+      const [a, d, z, lib, dt, dim, pe, pm, ep, zek, ok, wd, wa, we, wlat, wlon, wt] = await Promise.all([
         getSecret(SECRET_KEYS.anthropicApiKey),
         getSecret(SECRET_KEYS.deepseekApiKey),
         getSecret(SECRET_KEYS.zhipuApiKey),
@@ -56,6 +57,7 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
         getSecret(SECRET_KEYS.weatherEnabled),
         getSecret(SECRET_KEYS.weatherLat),
         getSecret(SECRET_KEYS.weatherLon),
+        getSecret(SECRET_KEYS.weeklyTime),
       ]);
       if (cancelled) return;
       setAnthropic(a ?? "");
@@ -64,6 +66,7 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
       setLibraryPath(lib ?? "");
       setDreamDailyTime(dt ?? "03:14");
       setDreamIdleMinutes(dim ?? "30");
+      setWeeklyTime(wt ?? "09:00");
       // Default to enabled; only disable when explicitly stored as "false"
       setPerceptionEnabled(pe !== "false");
       setPerceptionMode(pm === "llm" ? "llm" : "rule");
@@ -99,6 +102,7 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
       await setSecret(SECRET_KEYS.libraryRootPath, libraryPath);
       await setSecret(SECRET_KEYS.dreamDailyTime, dreamDailyTime);
       await setSecret(SECRET_KEYS.dreamIdleMinutes, dreamIdleMinutes);
+      await setSecret(SECRET_KEYS.weeklyTime, weeklyTime);
       await setSecret(SECRET_KEYS.perceptionEnabled, perceptionEnabled ? "true" : "false");
       await setSecret(SECRET_KEYS.perceptionMode, perceptionMode);
       await setSecret(SECRET_KEYS.weatherEnabled, weatherEnabled ? "true" : "false");
@@ -123,7 +127,7 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
           setScanStatus(`Scan failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
-      onSchedulerUpdate?.(dreamDailyTime, Number(dreamIdleMinutes) || 0);
+      onSchedulerUpdate?.(dreamDailyTime, Number(dreamIdleMinutes) || 0, weeklyTime);
       onClose();
     } finally {
       setSaving(false);
@@ -335,7 +339,17 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
             checked={weeklyAuto}
             onChange={(e) => setWeeklyAuto(e.target.checked)}
           />
-          周日 03:14 自动生成
+          周日 {weeklyTime} 自动生成
+        </label>
+        <label>
+          周报生成时间 (HH:MM，周日触发)
+          <input
+            type="text"
+            placeholder="09:00"
+            value={weeklyTime}
+            onChange={(e) => setWeeklyTime(e.target.value)}
+            disabled={!loaded || !weeklyAuto}
+          />
         </label>
       </fieldset>
       <div className="settings-actions">

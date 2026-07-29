@@ -86,15 +86,18 @@ function App() {
       .catch(() => {})
       .then(async () => {
         // Load scheduler config from keychain, fall back to defaults
-        const [dt, dim] = await Promise.all([
+        const [dt, dim, wt] = await Promise.all([
           getSecret(SECRET_KEYS.dreamDailyTime).catch(() => null),
           getSecret(SECRET_KEYS.dreamIdleMinutes).catch(() => null),
+          getSecret(SECRET_KEYS.weeklyTime).catch(() => null),
         ]);
         const dailyTimeHHMM = dt ?? "03:14";
         const idleMinutes = dim !== null ? (Number(dim) || 0) : 30;
+        const weeklyTimeHHMM = wt ?? "09:00";
         const sched = new DreamScheduler({
           dailyTimeHHMM,
           idleMinutes,
+          weeklyTimeHHMM,
           runReflect: () => reflectNow().then(() => undefined),
           runWeekly: autoWeeklyTrigger,
         });
@@ -119,17 +122,21 @@ function App() {
     };
   }, []);
 
-  const handleSchedulerUpdate = useCallback((dailyTime: string, idleMinutes: number) => {
-    schedulerRef.current?.stop();
-    const sched = new DreamScheduler({
-      dailyTimeHHMM: dailyTime,
-      idleMinutes,
-      runReflect: () => reflectNow().then(() => undefined),
-      runWeekly: autoWeeklyTrigger,
-    });
-    schedulerRef.current = sched;
-    sched.start();
-  }, []);
+  const handleSchedulerUpdate = useCallback(
+    (dailyTime: string, idleMinutes: number, weeklyTime: string) => {
+      schedulerRef.current?.stop();
+      const sched = new DreamScheduler({
+        dailyTimeHHMM: dailyTime,
+        idleMinutes,
+        weeklyTimeHHMM: weeklyTime,
+        runReflect: () => reflectNow().then(() => undefined),
+        runWeekly: autoWeeklyTrigger,
+      });
+      schedulerRef.current = sched;
+      sched.start();
+    },
+    [],
+  );
 
   // Re-evaluate after bootProviders completes so the orchestrator sees registered providers
   const orchestrator: Orchestrator | null = useMemo(

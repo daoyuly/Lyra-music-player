@@ -14,6 +14,7 @@ export const SECRET_KEYS = {
   openaiApiKey: "embedding.openai.apiKey",
   weeklyDirOverride: "weekly.dirOverride",
   weeklyAutoEnabled: "weekly.autoEnabled",
+  weeklyTime: "weekly.time",
   weatherEnabled: "perception.weatherEnabled",
   weatherLat: "perception.weatherLat",
   weatherLon: "perception.weatherLon",

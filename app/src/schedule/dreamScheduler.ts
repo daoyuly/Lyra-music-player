@@ -14,9 +14,13 @@ export type DreamSchedulerConfig = {
   /** Minutes of inactivity before idle trigger fires; 0 = disabled */
   idleMinutes: number;
   runReflect: () => Promise<void>;
-  /** Sprint weekly: fires on Sunday daily-tick after reflect. Independent
-   *  error boundary — a runWeekly throw does not affect reflect state. */
+  /** Sprint weekly: fires on Sunday. Independent error boundary — a
+   *  runWeekly throw does not affect reflect state. */
   runWeekly?: () => Promise<void>;
+  /** "HH:MM" — weekly letter generation time on Sundays. Defaults to
+   *  dailyTimeHHMM when absent (backwards compatible). Recommended
+   *  default is a waking hour (09:00) so users can read it fresh. */
+  weeklyTimeHHMM?: string;
   /** Injectable clock for tests; defaults to `() => new Date()` */
   clock?: () => Date;
   /**
@@ -140,6 +144,7 @@ export class DreamScheduler {
   private async _tick(): Promise<void> {
     const now = this._now();
     await this._checkDaily(now);
+    await this._checkWeekly(now);
     await this._checkIdle(now);
   }
 
@@ -151,24 +156,27 @@ export class DreamScheduler {
     if (now.getHours() !== h || now.getMinutes() !== m) return;
 
     const todayISO = localISO(now);
-    if (this._lastDailyRunISO === todayISO) {
-      // reflect already ran today; still allow weekly check because weekly
-      // has its own per-Sunday guard.
-      await this._maybeRunWeekly(now, todayISO);
-      return;
-    }
+    if (this._lastDailyRunISO === todayISO) return;
 
     await this._runReflect(() => {
       this._lastDailyRunISO = todayISO;
     });
-    await this._maybeRunWeekly(now, todayISO);
   }
 
-  private async _maybeRunWeekly(now: Date, todayISO: string): Promise<void> {
+  private async _checkWeekly(now: Date): Promise<void> {
     const runWeekly = this._config.runWeekly;
     if (!runWeekly) return;
-    if (now.getDay() !== 0) return;             // 0 = Sunday
+    if (now.getDay() !== 0) return; // 0 = Sunday
+
+    // Weekly time defaults to dailyTime when not set (backwards compatible).
+    const raw = this._config.weeklyTimeHHMM ?? this._config.dailyTimeHHMM;
+    const parsed = parseHHMM(raw);
+    if (!parsed) return;
+    if (now.getHours() !== parsed.h || now.getMinutes() !== parsed.m) return;
+
+    const todayISO = localISO(now);
     if (this._lastWeeklyRunISO === todayISO) return;
+
     try {
       await runWeekly();
       this._lastWeeklyRunISO = todayISO;

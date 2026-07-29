@@ -200,7 +200,7 @@ describe("Settings", () => {
     await waitFor(() => {
       expect(setSecret).toHaveBeenCalledWith("dream.dailyTime", "02:30");
       expect(setSecret).toHaveBeenCalledWith("dream.idleMinutes", "60");
-      expect(onSchedulerUpdate).toHaveBeenCalledWith("02:30", 60);
+      expect(onSchedulerUpdate).toHaveBeenCalledWith("02:30", 60, "09:00");
       expect(onClose).toHaveBeenCalled();
     });
   });
