@@ -21,6 +21,13 @@ export type DreamSchedulerConfig = {
    *  dailyTimeHHMM when absent (backwards compatible). Recommended
    *  default is a waking hour (09:00) so users can read it fresh. */
   weeklyTimeHHMM?: string;
+  /** Cross-session persistence of last-run dates. Enables boot-time
+   *  catch-up: if the scheduled time has already passed today and no run
+   *  has been recorded yet, the next tick will fire immediately. */
+  getLastReflectDate?: () => Promise<string | null>;
+  setLastReflectDate?: (iso: string) => Promise<void>;
+  getLastWeeklyDate?: () => Promise<string | null>;
+  setLastWeeklyDate?: (iso: string) => Promise<void>;
   /** Injectable clock for tests; defaults to `() => new Date()` */
   clock?: () => Date;
   /**
@@ -65,6 +72,11 @@ function localISO(d: Date): string {
   const dd = String(d.getDate()).padStart(2, "0");
   return `${y}-${mo}-${dd}`;
 }
+
+/** Minutes since local midnight, used for "reached time" comparisons. */
+function minutesOf(d: Date): number {
+  return d.getHours() * 60 + d.getMinutes();
+}
 const IDLE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours
 const SLEEP_START_H = 22;
 const SLEEP_END_H = 6; // exclusive upper bound for morning
@@ -107,7 +119,13 @@ export class DreamScheduler {
     return this._running;
   }
 
-  /** Begin the 60-second tick and attach the activity listener. */
+  /** Begin the 60-second tick and attach the activity listener.
+   *
+   *  If `getLastReflectDate` / `getLastWeeklyDate` were provided, they are
+   *  loaded asynchronously and a catch-up tick is fired once state is
+   *  restored. This lets the scheduler notice "user missed the 03:14
+   *  reflect because the app was closed" and run it as soon as the app
+   *  opens (as long as the wall time has passed the scheduled time). */
   start(): void {
     if (this._timerId !== null) return; // already started
     this._activitySince = this._now().getTime();
@@ -121,6 +139,27 @@ export class DreamScheduler {
 
     // Start the ticker
     this._timerId = setInterval(() => this._tick(), TICK_MS);
+
+    // Boot-time catch-up: only when a persister is provided. Preload the
+    // last-run dates, then invoke catchUp() which uses "reached time"
+    // semantics (different from _tick's exact-minute match).
+    const hasPersistence =
+      !!this._config.getLastReflectDate || !!this._config.getLastWeeklyDate;
+    if (hasPersistence) {
+      void (async () => {
+        const [d, w] = await Promise.all([
+          this._config.getLastReflectDate
+            ? this._config.getLastReflectDate().catch(() => null)
+            : Promise.resolve(null),
+          this._config.getLastWeeklyDate
+            ? this._config.getLastWeeklyDate().catch(() => null)
+            : Promise.resolve(null),
+        ]);
+        if (d) this._lastDailyRunISO = d;
+        if (w) this._lastWeeklyRunISO = w;
+        await this.catchUp();
+      })();
+    }
   }
 
   /** Stop the ticker and detach the activity listener. */
@@ -160,6 +199,7 @@ export class DreamScheduler {
 
     await this._runReflect(() => {
       this._lastDailyRunISO = todayISO;
+      void this._config.setLastReflectDate?.(todayISO).catch(() => {});
     });
   }
 
@@ -180,10 +220,57 @@ export class DreamScheduler {
     try {
       await runWeekly();
       this._lastWeeklyRunISO = todayISO;
+      void this._config.setLastWeeklyDate?.(todayISO).catch(() => {});
     } catch (err) {
       console.warn("[DreamScheduler] runWeekly threw:", err);
       // Do NOT set _lastWeeklyRunISO on failure — allow retry next tick
       // within the same day. Per-Sunday guard resets next Sunday.
+    }
+  }
+
+  /**
+   * Boot-time catch-up: fires missed reflect/weekly runs when the app
+   * launches after their scheduled time. Called automatically by `start()`
+   * when the config provides a persister, and can be called manually.
+   * Uses "reached time & today not run" semantics rather than exact HH:MM
+   * match so users who weren't running the app at 03:14 still get their
+   * reflection when they open the app later.
+   */
+  async catchUp(): Promise<void> {
+    const now = this._now();
+    const todayISO = localISO(now);
+
+    // Daily catch-up
+    const daily = parseHHMM(this._config.dailyTimeHHMM);
+    if (
+      daily &&
+      minutesOf(now) >= daily.h * 60 + daily.m &&
+      this._lastDailyRunISO !== todayISO
+    ) {
+      await this._runReflect(() => {
+        this._lastDailyRunISO = todayISO;
+        void this._config.setLastReflectDate?.(todayISO).catch(() => {});
+      });
+    }
+
+    // Weekly catch-up (only on Sundays)
+    const runWeekly = this._config.runWeekly;
+    if (runWeekly && now.getDay() === 0) {
+      const raw = this._config.weeklyTimeHHMM ?? this._config.dailyTimeHHMM;
+      const parsed = parseHHMM(raw);
+      if (
+        parsed &&
+        minutesOf(now) >= parsed.h * 60 + parsed.m &&
+        this._lastWeeklyRunISO !== todayISO
+      ) {
+        try {
+          await runWeekly();
+          this._lastWeeklyRunISO = todayISO;
+          void this._config.setLastWeeklyDate?.(todayISO).catch(() => {});
+        } catch (err) {
+          console.warn("[DreamScheduler] runWeekly (catchUp) threw:", err);
+        }
+      }
     }
   }
 

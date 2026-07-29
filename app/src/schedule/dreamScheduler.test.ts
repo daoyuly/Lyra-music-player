@@ -519,3 +519,123 @@ describe("DreamScheduler weekly hook", () => {
     s.stop();
   });
 });
+
+describe("DreamScheduler boot-time catch-up", () => {
+  it("catchUp() fires reflect when wall time is past dailyTime and today not run", async () => {
+    // Simulate user opening the app at 10:00, dailyTime was 03:14
+    const now = new Date("2026-07-06T10:00:00"); // Monday
+    const runReflect = vi.fn(async () => {});
+    const s = new DreamScheduler({
+      dailyTimeHHMM: "03:14",
+      idleMinutes: 0,
+      runReflect,
+      clock: () => now,
+      onActivityListen: () => () => {},
+    });
+    await s.catchUp();
+    expect(runReflect).toHaveBeenCalledTimes(1);
+  });
+
+  it("catchUp() does NOT fire reflect when wall time is before dailyTime", async () => {
+    const now = new Date("2026-07-06T02:00:00"); // Before 03:14
+    const runReflect = vi.fn(async () => {});
+    const s = new DreamScheduler({
+      dailyTimeHHMM: "03:14",
+      idleMinutes: 0,
+      runReflect,
+      clock: () => now,
+      onActivityListen: () => () => {},
+    });
+    await s.catchUp();
+    expect(runReflect).not.toHaveBeenCalled();
+  });
+
+  it("catchUp() does NOT re-fire when already ran today", async () => {
+    const now = new Date("2026-07-06T10:00:00");
+    const runReflect = vi.fn(async () => {});
+    const s = new DreamScheduler({
+      dailyTimeHHMM: "03:14",
+      idleMinutes: 0,
+      runReflect,
+      clock: () => now,
+      onActivityListen: () => () => {},
+    });
+    await s.catchUp();
+    await s.catchUp(); // second call
+    expect(runReflect).toHaveBeenCalledTimes(1);
+  });
+
+  it("catchUp() fires weekly on Sunday when past weeklyTime and this week not run", async () => {
+    const now = new Date("2026-07-05T15:00:00"); // Sunday afternoon
+    const runReflect = vi.fn(async () => {});
+    const runWeekly = vi.fn(async () => {});
+    const s = new DreamScheduler({
+      dailyTimeHHMM: "03:14",
+      weeklyTimeHHMM: "09:00",
+      idleMinutes: 0,
+      runReflect,
+      runWeekly,
+      clock: () => now,
+      onActivityListen: () => () => {},
+    });
+    await s.catchUp();
+    expect(runWeekly).toHaveBeenCalledTimes(1);
+  });
+
+  it("catchUp() does not fire weekly on non-Sunday even if past time", async () => {
+    const now = new Date("2026-07-06T15:00:00"); // Monday
+    const runWeekly = vi.fn(async () => {});
+    const s = new DreamScheduler({
+      dailyTimeHHMM: "03:14",
+      weeklyTimeHHMM: "09:00",
+      idleMinutes: 0,
+      runReflect: vi.fn(async () => {}),
+      runWeekly,
+      clock: () => now,
+      onActivityListen: () => () => {},
+    });
+    await s.catchUp();
+    expect(runWeekly).not.toHaveBeenCalled();
+  });
+
+  it("start() preloads persisted last-run dates and skips catch-up when already run", async () => {
+    const now = new Date("2026-07-06T10:00:00"); // Monday, past 03:14
+    const todayISO = "2026-07-06";
+    const runReflect = vi.fn(async () => {});
+    const getLastReflectDate = vi.fn(async () => todayISO);
+    const s = new DreamScheduler({
+      dailyTimeHHMM: "03:14",
+      idleMinutes: 0,
+      runReflect,
+      getLastReflectDate,
+      clock: () => now,
+      onActivityListen: () => () => {},
+    });
+    s.start();
+    // Wait a microtask for the async preload to complete
+    await new Promise((r) => setTimeout(r, 10));
+    expect(getLastReflectDate).toHaveBeenCalledTimes(1);
+    expect(runReflect).not.toHaveBeenCalled(); // today already recorded
+    s.stop();
+  });
+
+  it("start() with persister and no prior run triggers catch-up on boot", async () => {
+    const now = new Date("2026-07-06T10:00:00"); // Monday, past 03:14
+    const runReflect = vi.fn(async () => {});
+    const setLastReflectDate = vi.fn(async () => {});
+    const s = new DreamScheduler({
+      dailyTimeHHMM: "03:14",
+      idleMinutes: 0,
+      runReflect,
+      getLastReflectDate: async () => null,
+      setLastReflectDate,
+      clock: () => now,
+      onActivityListen: () => () => {},
+    });
+    s.start();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(runReflect).toHaveBeenCalledTimes(1);
+    expect(setLastReflectDate).toHaveBeenCalledWith("2026-07-06");
+    s.stop();
+  });
+});

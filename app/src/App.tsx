@@ -13,7 +13,7 @@ import { setMemoryContext } from "./memory/context";
 import { onSongComplete } from "./audio/player";
 import { DreamScheduler } from "./schedule/dreamScheduler";
 import { autoWeeklyTrigger, onDemandWeeklyOpen } from "./weekly/wire";
-import { SECRET_KEYS, getSecret } from "./settings/secrets";
+import { SECRET_KEYS, getSecret, setSecret } from "./settings/secrets";
 import { ProactiveEngine } from "./proactive/engine";
 import { createSulkStore } from "./proactive/sulkStore";
 import { readPersistedSulkUntil, persistSulkSnapshot } from "./proactive/sulkPersistence";
@@ -100,6 +100,10 @@ function App() {
           weeklyTimeHHMM,
           runReflect: () => reflectNow().then(() => undefined),
           runWeekly: autoWeeklyTrigger,
+          getLastReflectDate: () => getSecret(SECRET_KEYS.dreamLastReflectDate),
+          setLastReflectDate: (iso) => setSecret(SECRET_KEYS.dreamLastReflectDate, iso),
+          getLastWeeklyDate: () => getSecret(SECRET_KEYS.weeklyLastRunDate),
+          setLastWeeklyDate: (iso) => setSecret(SECRET_KEYS.weeklyLastRunDate, iso),
         });
         schedulerRef.current = sched;
         sched.start();
@@ -131,6 +135,10 @@ function App() {
         weeklyTimeHHMM: weeklyTime,
         runReflect: () => reflectNow().then(() => undefined),
         runWeekly: autoWeeklyTrigger,
+        getLastReflectDate: () => getSecret(SECRET_KEYS.dreamLastReflectDate),
+        setLastReflectDate: (iso) => setSecret(SECRET_KEYS.dreamLastReflectDate, iso),
+        getLastWeeklyDate: () => getSecret(SECRET_KEYS.weeklyLastRunDate),
+        setLastWeeklyDate: (iso) => setSecret(SECRET_KEYS.weeklyLastRunDate, iso),
       });
       schedulerRef.current = sched;
       sched.start();

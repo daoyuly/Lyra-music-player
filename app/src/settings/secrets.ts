@@ -15,6 +15,8 @@ export const SECRET_KEYS = {
   weeklyDirOverride: "weekly.dirOverride",
   weeklyAutoEnabled: "weekly.autoEnabled",
   weeklyTime: "weekly.time",
+  dreamLastReflectDate: "dream.lastReflectDate",
+  weeklyLastRunDate: "weekly.lastRunDate",
   weatherEnabled: "perception.weatherEnabled",
   weatherLat: "perception.weatherLat",
   weatherLon: "perception.weatherLon",
