@@ -7,7 +7,7 @@ pub mod tray;
 pub mod weekly;
 
 use std::sync::Arc;
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, Manager, State, WindowEvent};
 use tauri_plugin_sql::{Migration, MigrationKind};
 use tray::{TrayController, TrayState};
 
@@ -173,6 +173,16 @@ pub fn run() {
             let tray_ctrl = TrayController::new(&app.handle()).expect("tray init");
             app.manage(TrayState(tray_ctrl));
             Ok(())
+        })
+        // Keep the app alive when the user closes the window — the tray
+        // icon remains, and the DreamScheduler keeps ticking so scheduled
+        // reflect/weekly runs still happen. Clicking the tray icon re-shows
+        // the window. Full quit is done from the OS menu / Cmd+Q.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             audio_play,

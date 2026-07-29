@@ -4,8 +4,8 @@ use std::sync::{
 };
 use tauri::{
     image::Image,
-    tray::{TrayIcon, TrayIconBuilder, TrayIconId},
-    AppHandle,
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent, TrayIconId},
+    AppHandle, Manager,
 };
 
 const TRAY_ID: &str = "lyra-tray";
@@ -55,7 +55,31 @@ impl TrayController {
         let tray_id = TrayIconId::new(TRAY_ID);
         let tray = TrayIconBuilder::with_id(tray_id.clone())
             .icon(bright)
+            // macOS system menu-bar icons should follow the template
+            // convention so they blend with dark/light appearance.
+            .icon_as_template(true)
             .tooltip("Lyra")
+            .on_tray_icon_event(|tray, event| {
+                // Left-click on the tray icon toggles the main window's
+                // visibility. Right-click is left for a future menu.
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    let app = tray.app_handle();
+                    if let Some(win) = app.get_webview_window("main") {
+                        let visible = win.is_visible().unwrap_or(false);
+                        if visible {
+                            let _ = win.hide();
+                        } else {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                }
+            })
             .build(app)?;
 
         Ok(Self {
