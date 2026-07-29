@@ -19,6 +19,7 @@ import {
 import type { EmotionSnapshot, EmotionTimelineWindow } from "../perception/emotionTimeline";
 import { ShiftEffectivenessPanel } from "./ShiftEffectivenessPanel";
 import { RuleTriggerHeatmap } from "./RuleTriggerHeatmap";
+import { dashboardSectionDivider } from "./dashboardStyles";
 
 const WINDOW_OPTIONS: { id: EmotionTimelineWindow; label: string }[] = [
   { id: "7d", label: "7 天" },
@@ -122,12 +123,12 @@ export function EmotionDashboard() {
       <RecentReasons rows={rows.slice(0, 5)} />
 
       {/* Sprint 18: shift effectiveness panel */}
-      <div style={{ marginTop: "1.5rem", borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: "1rem" }}>
+      <div style={dashboardSectionDivider}>
         <ShiftEffectivenessPanel />
       </div>
 
       {/* Sprint 20: rule trigger heatmap */}
-      <div style={{ marginTop: "1.5rem", borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: "1rem" }}>
+      <div style={dashboardSectionDivider}>
         <RuleTriggerHeatmap />
       </div>
     </div>

@@ -11,6 +11,7 @@
 import { useState, useEffect } from "react";
 import * as perceptionAuditRepo from "../db/repo/perceptionAuditRepo";
 import type { PerceptionAuditRow } from "../db/repo/perceptionAuditRepo";
+import { dashboard, dashboardHeader } from "./dashboardStyles";
 
 /**
  * Rules with canonical reason substrings from RulePerceptionAgent.
@@ -83,8 +84,8 @@ export function RuleTriggerHeatmap() {
   const maxCount = Math.max(...Array.from(counts.values()), 1);
 
   return (
-    <div data-testid="rule-trigger-heatmap" style={{ padding: "0.5rem" }}>
-      <div style={{ fontSize: "0.85rem", opacity: 0.7, marginBottom: "0.75rem" }}>
+    <div data-testid="rule-trigger-heatmap" style={{ padding: dashboard.panelPadding }}>
+      <div style={dashboardHeader}>
         规则触发频率 ({rows.length} 条审计记录)
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>

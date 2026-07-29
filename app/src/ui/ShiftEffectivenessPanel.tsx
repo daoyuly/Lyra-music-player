@@ -12,6 +12,7 @@ import * as shiftFeedbackRepo from "../db/repo/shiftFeedbackRepo";
 import type { ShiftFeedback } from "../perception/shiftFeedback";
 import { computeShiftStats } from "../perception/shiftFeedback";
 import type { ShiftStats } from "../perception/shiftFeedback";
+import { dashboard, dashboardHeader } from "./dashboardStyles";
 
 const SHIFT_COLORS: Record<string, string> = {
   接住: "#4CAF50",
@@ -51,8 +52,8 @@ export function ShiftEffectivenessPanel() {
   const stats = computeShiftStats(feedback);
 
   return (
-    <div data-testid="shift-effectiveness-panel" style={{ padding: "0.5rem" }}>
-      <div style={{ fontSize: "0.85rem", opacity: 0.7, marginBottom: "0.75rem" }}>
+    <div data-testid="shift-effectiveness-panel" style={{ padding: dashboard.panelPadding }}>
+      <div style={dashboardHeader}>
         Shift 推荐效率（{feedback.length} 条反馈）
       </div>
       <BarChart stats={stats} />
