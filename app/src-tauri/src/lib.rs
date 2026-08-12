@@ -217,6 +217,18 @@ pub fn run() {
                             sql: include_str!("../migrations/010_product_events.sql"),
                             kind: MigrationKind::Up,
                         },
+                        Migration {
+                            version: 11,
+                            description: "active_intent sticky listening intent",
+                            sql: include_str!("../migrations/011_active_intent.sql"),
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 12,
+                            description: "DJ agent library_track_profiles",
+                            sql: include_str!("../migrations/012_track_profiles.sql"),
+                            kind: MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),

@@ -27,6 +27,9 @@ export type ProactiveKind =
 export type AgentResponse = {
   song_id: string;
   rationale: string;
+  /** Companion's song-profile sketch for this pick. Soft intent carrier
+   *  across turns when ActiveIntent is absent (optional for older rows). */
+  target_profile?: string;
   proactive_kind?: ProactiveKind;
   generation_meta?: {
     generator: string;

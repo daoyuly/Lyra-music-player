@@ -21,6 +21,8 @@ const EXPORT_TABLES: &[&str] = &[
     "soul_state",
     "agent_runs",
     "product_events",
+    "active_intent",
+    "library_track_profiles",
 ];
 
 async fn open_pool(app: &tauri::AppHandle) -> Result<SqlitePool, String> {

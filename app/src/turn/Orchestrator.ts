@@ -18,6 +18,9 @@ import type { EventBus } from "../perception/events";
 import type { ToolContextFactory } from "./toolContextFactory";
 import type { TurnCancellationManager } from "./turnCancellation";
 import type { AgentRunSink } from "./agentRunSink";
+import { parseIntent } from "../agents/intentParser";
+import type { ActiveIntent } from "../db/repo/activeIntentRepo";
+import * as productEventsRepo from "../db/repo/productEventsRepo";
 
 export type SoulStoreLike = {
   load(): Promise<SoulState>;
@@ -65,6 +68,18 @@ export type OrchestratorDeps = {
    *  receives real bpm/energy/valence for shift-based ranking. */
   libraryFeaturesRepo?: {
     getBatch(ids: string[]): Promise<Map<string, import("../db/repo/libraryFeaturesRepo").LibraryFeatures>>;
+  };
+  /** Sticky listening intent store (persists across app restarts). */
+  activeIntentRepo?: {
+    load(): Promise<ActiveIntent | null>;
+    save(intent: ActiveIntent): Promise<void>;
+    clear(): Promise<void>;
+  };
+  /** DJ agent track profiles for candidate display + intent filtering. */
+  trackProfilesRepo?: {
+    getBatch(
+      ids: string[],
+    ): Promise<Map<string, import("../db/repo/trackProfilesRepo").TrackProfile>>;
   };
   clock?: () => number;
   idGen?: () => string;
@@ -127,6 +142,9 @@ export class Orchestrator {
    *  Session-scoped: not persisted across app restarts. */
   private recentSongIds: string[] = [];
   private static readonly RECENT_EXCLUDE_WINDOW = 5;
+  /** Sticky listening intent (e.g. 粤语). Loaded lazily from activeIntentRepo. */
+  private activeIntent: ActiveIntent | null = null;
+  private activeIntentLoaded = false;
 
   constructor(deps: OrchestratorDeps) {
     this.deps = deps;
@@ -182,6 +200,95 @@ export class Orchestrator {
     if (this.recentSongIds.length > Orchestrator.RECENT_EXCLUDE_WINDOW) {
       this.recentSongIds.shift();
     }
+  }
+
+  /** Hydrate sticky intent from DB once per Orchestrator lifetime. */
+  private async ensureActiveIntentLoaded(): Promise<void> {
+    if (this.activeIntentLoaded) return;
+    this.activeIntentLoaded = true;
+    const repo = this.deps.activeIntentRepo;
+    if (!repo) return;
+    try {
+      this.activeIntent = await repo.load();
+    } catch (e) {
+      console.warn("[lyra] activeIntentRepo.load failed:", e);
+      this.activeIntent = null;
+    }
+  }
+
+  getActiveIntent(): ActiveIntent | null {
+    return this.activeIntent;
+  }
+
+  /** Persist or clear sticky intent. Fire-and-forget safe for callers. */
+  async setActiveIntent(intent: ActiveIntent | null): Promise<void> {
+    this.activeIntentLoaded = true;
+    this.activeIntent = intent;
+    const repo = this.deps.activeIntentRepo;
+    if (!repo) return;
+    try {
+      if (intent) await repo.save(intent);
+      else await repo.clear();
+    } catch (e) {
+      console.warn("[lyra] activeIntentRepo persist failed:", e);
+    }
+  }
+
+  /**
+   * Apply deterministic IntentParser result to the sticky-intent slot.
+   * clear → wipe; hit with constraints → upsert; miss → keep prior.
+   */
+  private async applyParsedIntent(
+    text: string,
+    turnId: string,
+    now: number,
+  ): Promise<void> {
+    await this.ensureActiveIntentLoaded();
+    const parsed = parseIntent(text);
+    if (!parsed.hit) return;
+
+    if (parsed.clear) {
+      await this.setActiveIntent(null);
+      void productEventsRepo
+        .record("active_intent_cleared", { via: "intent_parser", text })
+        .catch(() => {});
+      return;
+    }
+
+    const next: ActiveIntent = {
+      rawText: text.trim(),
+      constraints: parsed.constraints,
+      persistence: parsed.persistence,
+      source: "user-explicit",
+      createdAt: now,
+      turnId,
+    };
+    await this.setActiveIntent(next);
+    void productEventsRepo
+      .record("active_intent_set", {
+        via: "intent_parser",
+        persistence: next.persistence,
+        languages: next.constraints.languages ?? [],
+        genres: next.constraints.genres ?? [],
+      })
+      .catch(() => {});
+  }
+
+  /** Build pseudoTarget, always appending sticky intent rawText when present. */
+  private buildPseudoTarget(
+    userUtterance: string,
+    emotionLabels: string[],
+    override?: string,
+  ): string {
+    const intentText = this.activeIntent?.rawText?.trim() ?? "";
+    const base =
+      override !== undefined
+        ? override
+        : `${userUtterance} ${emotionLabels.join(" ")}`.trim();
+    if (!intentText) return base.trim();
+    // Avoid duplicating when the utterance itself already is the intent text
+    if (base.includes(intentText)) return base.trim();
+    return `${base} ${intentText}`.trim();
   }
 
   /** Finalise the previous turn: fold events, optionally apply verbal, update soul, persist. */
@@ -286,20 +393,30 @@ export class Orchestrator {
 
     const soul = await soulStore.load();
 
-    const pseudoTarget =
-      pseudoTargetOverride ??
-      `${userUtterance} ${emotion.labels.join(" ")}`.trim();
+    await this.ensureActiveIntentLoaded();
+    const pseudoTarget = this.buildPseudoTarget(
+      userUtterance,
+      emotion.labels,
+      pseudoTargetOverride,
+    );
     let candidates = await library.prefilter(
       pseudoTarget,
       emotion.pad,
       30,
       excludeIds,
+      this.activeIntent ?? undefined,
     );
     // Fallback: if excludeIds emptied the library (e.g., only one track exists
     // and it's the one we just played), retry without the exclusion so we
     // still play something rather than erroring.
     if (candidates.length === 0 && excludeIds && excludeIds.size > 0) {
-      candidates = await library.prefilter(pseudoTarget, emotion.pad, 30);
+      candidates = await library.prefilter(
+        pseudoTarget,
+        emotion.pad,
+        30,
+        undefined,
+        this.activeIntent ?? undefined,
+      );
     }
     if (candidates.length === 0) {
       this.emit({
@@ -320,6 +437,15 @@ export class Orchestrator {
       ...(this.currentSong != null ? { lastSong: this.currentSong } : {}),
       ...ctx,
     });
+
+    // Companion LLM may clear sticky intent when IntentParser missed the cue.
+    if (chosen.verbal_intent === "clear_intent") {
+      await this.setActiveIntent(null);
+      void productEventsRepo
+        .record("active_intent_cleared", { via: "companion_verbal_intent" })
+        .catch(() => {});
+    }
+
     const song = candidates.find((c) => c.id === chosen.song_id)!;
 
     const turnId = idGen();
@@ -337,7 +463,11 @@ export class Orchestrator {
       timestamp: turnTs,
       current_emotion: emotion,
       user_utterance: { modality, content: userUtterance },
-      agent_response: { song_id: chosen.song_id, rationale: chosen.rationale },
+      agent_response: {
+        song_id: chosen.song_id,
+        rationale: chosen.rationale,
+        target_profile: chosen.target_profile,
+      },
       user_reaction: {
         behavioral: {
           listen_duration_ms: 0,
@@ -366,6 +496,12 @@ export class Orchestrator {
     this.currentSong = song;
     this.pendingEvents = [];
     this.trackSongPicked(song.id);
+
+    // Consume once-intent after the first successful play.
+    if (this.activeIntent?.persistence === "once") {
+      await this.setActiveIntent(null);
+    }
+
     this.emit({ kind: "playing", turn, song });
   }
 
@@ -515,6 +651,12 @@ export class Orchestrator {
     }
 
     try {
+      // Sticky intent must be applied BEFORE emotion/prefilter so the same
+      // turn's candidate pool already reflects "一直播放粤语歌曲".
+      const clock = this.deps.clock ?? Date.now;
+      const idGen = this.deps.idGen ?? (() => crypto.randomUUID());
+      await this.applyParsedIntent(text, idGen(), clock());
+
       const emotion = await emotionAgent.analyze({ userUtterance: text });
       const blended = blendEmotionWithBias(emotion, this.perceptionBias);
       await this.finalisePreviousTurn(text, blended.pad);
@@ -545,9 +687,17 @@ export class Orchestrator {
     candidateFeatures:
       | Map<string, import("../db/repo/libraryFeaturesRepo").LibraryFeatures>
       | undefined;
+    candidateProfiles:
+      | Map<string, import("../db/repo/trackProfilesRepo").TrackProfile>
+      | undefined;
+    activeIntent: ActiveIntent | null;
   }> {
+    await this.ensureActiveIntentLoaded();
     const { livingPortrait, topFacts, emotionTimeline } = getMemoryContext();
     const candidateFeatures = await (this.deps.libraryFeaturesRepo
+      ?.getBatch(candidateIds)
+      .catch(() => undefined));
+    const candidateProfiles = await (this.deps.trackProfilesRepo
       ?.getBatch(candidateIds)
       .catch(() => undefined));
     return {
@@ -560,6 +710,8 @@ export class Orchestrator {
         ? `${emotionTimeline.window} 窗口: pleasure ${emotionTimeline.pleasureTrend}, arousal ${emotionTimeline.arousalTrend}, volatility ${(emotionTimeline.volatility * 100).toFixed(0)}%`
         : undefined,
       candidateFeatures,
+      candidateProfiles,
+      activeIntent: this.activeIntent,
     };
   }
 

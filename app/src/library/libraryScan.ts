@@ -147,16 +147,18 @@ export async function importLibrary(
     }
   }
 
-  // Sprint 9 + 10: feature extraction + lyrics embedding. Both fire-and-forget
-  // so the "Imported N tracks" toast lands immediately; background loops
-  // upsert as decodes / API calls finish. Each track is best-effort.
+  // Sprint 9 + 10 + DJ: feature extraction + lyrics embedding + track profiles.
+  // Fire-and-forget so the "Imported N tracks" toast lands immediately.
   if (newTracks.length > 0) {
     const pf = extractFeaturesForTracks(newTracks);
     const pl = extractLyricsForTracks(newTracks);
-    if (opts.awaitFeatures) await Promise.all([pf, pl]);
+    const { annotateProfilesForTracks } = await import("./annotateProfiles");
+    const pd = annotateProfilesForTracks(newTracks);
+    if (opts.awaitFeatures) await Promise.all([pf, pl, pd]);
     else {
       void pf.catch(() => {});
       void pl.catch(() => {});
+      void pd.catch(() => {});
     }
   }
   return { imported: newTracks.length, pruned };

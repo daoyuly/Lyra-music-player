@@ -442,10 +442,10 @@ describe("Orchestrator T8: emotion prediction channel (auto-advance)", () => {
     let callCount = 0;
     const clockFn = () => {
       callCount++;
-      // First few calls come from runTurnWithEmotion (idGen, etc) — we need the
-      // advance clock only for the onSongComplete path.  Return turnTs for the
-      // first call (turn insert), advanceTs for subsequent calls.
-      return callCount === 1 ? turnTs : advanceTs;
+      // applyParsedIntent + runTurnWithEmotion both call clock before the turn
+      // is inserted — keep those on turnTs; subsequent calls (onSongComplete)
+      // advance into the prediction window.
+      return callCount <= 2 ? turnTs : advanceTs;
     };
 
     const emotionWithPrediction: CurrentEmotion = {
@@ -479,7 +479,7 @@ describe("Orchestrator T8: emotion prediction channel (auto-advance)", () => {
     const turnTs = 1730_000_000_000;
     const advanceTs = turnTs + 1 * 60_000; // only 1 min — below window
     let callCount = 0;
-    const clockFn = () => (callCount++ === 0 ? turnTs : advanceTs);
+    const clockFn = () => (callCount++ < 2 ? turnTs : advanceTs);
 
     const emotionWithPrediction: CurrentEmotion = {
       pad: { p: 0.1, a: 0.2, d: 0.0 },
@@ -864,5 +864,77 @@ describe("Orchestrator Sprint 19: libraryFeatures for CompanionAgent", () => {
     await expect(orc.onUserInput("hi")).resolves.toBeUndefined();
     const chooseArg = (deps.companion.choose as any).mock.calls[0][0];
     expect(chooseArg.candidateFeatures).toBeUndefined();
+  });
+});
+
+describe("Orchestrator ActiveIntent (sticky listening intent)", () => {
+  it("persists sticky Cantonese intent and appends it to auto-advance pseudoTarget", async () => {
+    const save = vi.fn(async () => {});
+    const load = vi.fn(async () => null);
+    const clear = vi.fn(async () => {});
+    const prefilter = vi.fn(async () => [
+      { id: "t1", path: "/x.mp3", origin: "local", added_at: 0, title: "T1" },
+    ]);
+    const deps = makeDeps({
+      library: { prefilter },
+      activeIntentRepo: { load, save, clear },
+      companion: {
+        choose: vi.fn(async () => ({
+          song_id: "t1",
+          target_profile: "粤语",
+          rationale: "y",
+          needed_shift: "接住" as const,
+        })),
+      },
+    });
+    const orc = new Orchestrator(deps as any);
+
+    await orc.onUserInput("一直播放粤语歌曲");
+    expect(save).toHaveBeenCalledOnce();
+    expect(orc.getActiveIntent()?.constraints.languages).toEqual(["yue"]);
+    expect(orc.getActiveIntent()?.persistence).toBe("sticky");
+
+    // First prefilter target should include the utterance
+    expect(String((prefilter.mock.calls[0] as unknown[])[0])).toContain("粤语");
+
+    await orc.onSongComplete();
+    // Auto-advance target must still carry the sticky intent raw text
+    const autoTarget = String((prefilter.mock.calls[1] as unknown[])[0]);
+    expect(autoTarget).toContain("一直播放粤语歌曲");
+    // And companion receives activeIntent on auto-advance
+    const chooseAuto = (deps.companion.choose as any).mock.calls[1][0];
+    expect(chooseAuto.activeIntent?.constraints.languages).toEqual(["yue"]);
+    expect(chooseAuto.userUtterance).toBe("");
+  });
+
+  it("clears sticky intent on cancel phrases", async () => {
+    const save = vi.fn(async () => {});
+    const clear = vi.fn(async () => {});
+    const deps = makeDeps({
+      activeIntentRepo: {
+        load: vi.fn(async () => ({
+          rawText: "一直播放粤语歌曲",
+          constraints: { languages: ["yue"] },
+          persistence: "sticky",
+          source: "user-explicit",
+          createdAt: 1,
+          turnId: "old",
+        })),
+        save,
+        clear,
+      },
+    });
+    const orc = new Orchestrator(deps as any);
+    await orc.onUserInput("别放粤语了，随便来点");
+    expect(clear).toHaveBeenCalled();
+    expect(orc.getActiveIntent()).toBeNull();
+  });
+
+  it("stores target_profile on DialogueTurn.agent_response", async () => {
+    const deps = makeDeps();
+    const orc = new Orchestrator(deps as any);
+    await orc.onUserInput("hi");
+    const turn = (deps.turnRepo.insertTurn.mock.calls[0] as unknown[])[0] as DialogueTurn;
+    expect(turn.agent_response.target_profile).toBe("x");
   });
 });

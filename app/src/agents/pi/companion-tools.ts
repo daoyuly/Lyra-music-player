@@ -22,7 +22,14 @@ export type CompanionToolResult = {
   target_profile: string;
   rationale: string;
   needed_shift: "接住" | "点燃" | "陪着" | "打断";
-  verbal_intent?: "switch" | "repeat" | "adjust_calmer" | "adjust_livelier" | "similar" | null;
+  verbal_intent?:
+    | "switch"
+    | "repeat"
+    | "adjust_calmer"
+    | "adjust_livelier"
+    | "similar"
+    | "clear_intent"
+    | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -67,7 +74,15 @@ export function makePickSongTool(
         },
         verbal_intent: {
           type: "string",
-          enum: ["switch", "repeat", "adjust_calmer", "adjust_livelier", "similar", "null"],
+          enum: [
+            "switch",
+            "repeat",
+            "adjust_calmer",
+            "adjust_livelier",
+            "similar",
+            "clear_intent",
+            "null",
+          ],
           description: "用户说的话里是否含有明确意图。无意图时传 \"null\"。",
         },
       },
@@ -107,6 +122,7 @@ export function makePickSongTool(
         "adjust_calmer",
         "adjust_livelier",
         "similar",
+        "clear_intent",
       ] as const;
       type VerbalIntent = (typeof VALID_VERBAL_INTENTS)[number];
       const verbal_intent: VerbalIntent | null =

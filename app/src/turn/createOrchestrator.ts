@@ -6,6 +6,8 @@ import { createSoulStore } from "./soulStore";
 import * as turnRepo from "../db/repo/turnRepo";
 import * as shiftFeedbackRepo from "../db/repo/shiftFeedbackRepo";
 import * as libraryFeaturesRepo from "../db/repo/libraryFeaturesRepo";
+import * as activeIntentRepo from "../db/repo/activeIntentRepo";
+import * as trackProfilesRepo from "../db/repo/trackProfilesRepo";
 import { playFile, stopPlayback } from "../audio/player";
 import { registry } from "../providers/registry";
 import { bus as perceptionBus } from "../perception/events";
@@ -56,7 +58,9 @@ export function createDefaultOrchestrator(): Orchestrator | null {
     return null;
   }
 
-  const library = new LibraryAgent();
+  const library = new LibraryAgent({
+    profiles: { getBatch: (ids) => trackProfilesRepo.getBatch(ids) },
+  });
   const soulStore = createSoulStore();
   // AgentRunSink shared across EmotionAgent and CompanionAgent pi paths.
   const agentRunSink = new AgentRunSink();
@@ -93,6 +97,12 @@ export function createDefaultOrchestrator(): Orchestrator | null {
     eventBus: perceptionBus,
     shiftFeedbackRepo: { insert: shiftFeedbackRepo.insert },
     libraryFeaturesRepo: { getBatch: libraryFeaturesRepo.getBatch },
+    activeIntentRepo: {
+      load: () => activeIntentRepo.load(),
+      save: (i) => activeIntentRepo.save(i),
+      clear: () => activeIntentRepo.clear(),
+    },
+    trackProfilesRepo: { getBatch: (ids) => trackProfilesRepo.getBatch(ids) },
     agentRunSink,
   });
 }

@@ -91,12 +91,19 @@ function buildBrief(i: CompanionInput): string {
       ? `- 共同记忆(最近一条): ${soul.shared_memory[soul.shared_memory.length - 1].significance}`
       : "- 共同记忆: (无)";
   const candidateBlock = i.candidates
-    .map(
-      (c, idx) =>
-        `[${idx + 1}] id=${c.id} · ${songDisplayTitle(c)} · ${c.artist ?? "(无艺人)"} · ${
-          c.album ?? "-"
-        } · ${c.duration_ms ? Math.round(c.duration_ms / 1000) + "s" : "-"}`,
-    )
+    .map((c, idx) => {
+      const base = `[${idx + 1}] id=${c.id} · ${songDisplayTitle(c)} · ${c.artist ?? "(无艺人)"} · ${
+        c.album ?? "-"
+      } · ${c.duration_ms ? Math.round(c.duration_ms / 1000) + "s" : "-"}`;
+      const p = i.candidateProfiles?.get(c.id);
+      if (!p) return base;
+      const bits = [
+        p.language,
+        p.genres.slice(0, 2).join("/"),
+        p.one_liner,
+      ].filter(Boolean);
+      return `${base} · ${bits.join(" · ")}`;
+    })
     .join("\n");
 
   const memoryBlock = buildMemoryBlock(i);
@@ -142,6 +149,22 @@ function buildBrief(i: CompanionInput): string {
     parts.push(`上一首刚播完的是《${i.lastSong.title ?? i.lastSong.id}》— ${i.lastSong.artist ?? "(无艺人)"}`);
   }
 
+  // Active sticky intent — must appear on BOTH user-spoke and auto-advance paths
+  // so "一直播放粤语歌曲" survives song boundaries.
+  if (i.activeIntent) {
+    const c = i.activeIntent.constraints;
+    const bits: string[] = [];
+    if (c.languages?.length) bits.push(`语种=${c.languages.join(",")}`);
+    if (c.genres?.length) bits.push(`风格=${c.genres.join(",")}`);
+    if (c.scenes?.length) bits.push(`场景=${c.scenes.join(",")}`);
+    if (c.artists?.length) bits.push(`艺人=${c.artists.join(",")}`);
+    parts.push("");
+    parts.push(
+      `当前活跃意图(必须优先满足,未解除前每首续播都生效): 「${i.activeIntent.rawText}」` +
+        (bits.length > 0 ? ` [${bits.join("; ")}]` : ""),
+    );
+  }
+
   parts.push("");
   parts.push(`候选歌单(${i.candidates.length} 首):`);
   parts.push(candidateBlock);
@@ -149,7 +172,14 @@ function buildBrief(i: CompanionInput): string {
   return parts.join("\n");
 }
 
-const VERBAL_INTENTS = ["switch", "repeat", "adjust_calmer", "adjust_livelier", "similar"] as const;
+const VERBAL_INTENTS = [
+  "switch",
+  "repeat",
+  "adjust_calmer",
+  "adjust_livelier",
+  "similar",
+  "clear_intent",
+] as const;
 
 type PartialChosen = {
   song_id: string;
@@ -502,8 +532,11 @@ export class CompanionAgent {
       };
     }
 
+    // Narrow after closure assignment (TS can't see onResult mutate `chosen`).
+    const picked: ChosenSong = chosen;
+
     // Phase 3a: emit telemetry for detected verbal intent.
-    const vi = chosen.verbal_intent ?? null;
+    const vi = picked.verbal_intent ?? null;
     if (vi !== null) {
       void productEventsRepo
         .record("verbal_intent_detected", { intent: vi, agent_kind: "companion" })
@@ -513,20 +546,20 @@ export class CompanionAgent {
     // Phase 3a: repeat — override song_id with lastSong.
     if (vi === "repeat" && input.lastSong) {
       return {
-        ...chosen,
+        ...picked,
         song_id: input.lastSong.id,
         verbal_intent: "repeat",
       };
     }
 
     // Phase 3a: switch — if pi tool chose lastSong despite intent, pick next candidate.
-    if (vi === "switch" && input.lastSong && chosen.song_id === input.lastSong.id) {
+    if (vi === "switch" && input.lastSong && picked.song_id === input.lastSong.id) {
       const alt = candidateIds.find((id) => id !== input.lastSong!.id);
       if (alt) {
-        return { ...chosen, song_id: alt };
+        return { ...picked, song_id: alt };
       }
     }
 
-    return chosen;
+    return picked;
   }
 }

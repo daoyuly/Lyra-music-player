@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { CompanionAgent } from "./CompanionAgent";
+import { COMPANION_SYSTEM_PROMPT } from "./prompts/companion";
 import type { ModelProvider, ChatMessage, ChatResponse, SoulState, CurrentEmotion } from "../types";
 import type { CompanionInput } from "./types";
 import type { AgentRunSink } from "../turn/agentRunSink";
@@ -747,6 +748,8 @@ describe("CompanionAgent.choose — pi path + aux tools (Phase 3b)", () => {
 const lastSongFixture = {
   id: "t1",
   path: "/tmp/nuvole.mp3",
+  origin: "local" as const,
+  added_at: 0,
   title: "Nuvole Bianche",
   artist: "Ludovico Einaudi",
   album: "Una Mattina",
@@ -838,11 +841,9 @@ describe("CompanionAgent.choose — verbal_intent (Phase 3a)", () => {
   it("prompt char count increase is within 800 chars (token guard)", () => {
     // COMPANION_SYSTEM_PROMPT is the source of truth — measure char diff
     // New verbal_intent section adds ~200 chars; guard at 800 to be safe
-    const { COMPANION_SYSTEM_PROMPT } = require("./prompts/companion");
-    // Original prompt had 45 lines / ~1650 chars; new one has verbal_intent block
-    // We can't compare to old because we don't have it, but we can assert total is sane
-    // The entire prompt should stay under 3000 chars (far below 200-token cap)
+    // The entire prompt should stay under 3000 chars (far below context caps)
     expect(COMPANION_SYSTEM_PROMPT.length).toBeLessThan(3000);
+    expect(COMPANION_SYSTEM_PROMPT).toContain("clear_intent");
   });
 
   it("user message includes last song context when lastSong is provided", async () => {

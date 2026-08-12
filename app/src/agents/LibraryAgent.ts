@@ -4,6 +4,8 @@ import * as featuresRepo from "../db/repo/libraryFeaturesRepo";
 import * as lyricsRepo from "../db/repo/lyricsEmbeddingsRepo";
 import type { LibraryFeatures } from "../db/repo/libraryFeaturesRepo";
 import type { LyricsEmbedding } from "../db/repo/lyricsEmbeddingsRepo";
+import type { TrackProfile } from "../db/repo/trackProfilesRepo";
+import type { ActiveIntent } from "../db/repo/activeIntentRepo";
 import { createEmbeddingProvider } from "../providers/embeddingProvider";
 import type { EmbeddingProvider } from "../providers/embeddingProvider";
 import type { TargetProfile } from "./types";
@@ -15,6 +17,9 @@ export type FeaturesRepoLike = {
 };
 export type LyricsRepoLike = {
   getBatch(ids: string[]): Promise<Map<string, LyricsEmbedding>>;
+};
+export type ProfilesRepoLike = {
+  getBatch(ids: string[]): Promise<Map<string, TrackProfile>>;
 };
 export type ProviderFactory = () => Promise<EmbeddingProvider | null>;
 
@@ -106,10 +111,43 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
+/** Soft/hard match against ActiveIntent using DJ track profiles. */
+function intentMatchBoost(
+  profile: TrackProfile | undefined,
+  intent: ActiveIntent | undefined,
+): number {
+  if (!intent || !profile) return 0;
+  let boost = 0;
+  const langs = intent.constraints.languages;
+  if (langs && langs.length > 0) {
+    if (langs.includes(profile.language)) boost += 0.5;
+  }
+  const genres = intent.constraints.genres;
+  if (genres && genres.length > 0) {
+    const hay = profile.genres.join(" ").toLowerCase();
+    if (genres.some((g) => hay.includes(g.toLowerCase()))) boost += 0.25;
+  }
+  const scenes = intent.constraints.scenes;
+  if (scenes && scenes.length > 0) {
+    const hay = profile.scenes.join(" ").toLowerCase();
+    if (scenes.some((s) => hay.includes(s.toLowerCase()))) boost += 0.15;
+  }
+  return boost;
+}
+
+function matchesHardLanguage(
+  profile: TrackProfile | undefined,
+  languages: string[],
+): boolean {
+  if (!profile) return false;
+  return languages.includes(profile.language);
+}
+
 export class LibraryAgent {
   private repo: LibraryRepoLike;
   private features: FeaturesRepoLike;
   private lyrics: LyricsRepoLike;
+  private profiles: ProfilesRepoLike;
   private makeProvider: ProviderFactory;
 
   constructor(
@@ -117,12 +155,16 @@ export class LibraryAgent {
       repo?: LibraryRepoLike;
       features?: FeaturesRepoLike;
       lyrics?: LyricsRepoLike;
+      profiles?: ProfilesRepoLike;
       makeProvider?: ProviderFactory;
     } = {},
   ) {
     this.repo = opts.repo ?? { listAll: libraryRepo.listAll };
     this.features = opts.features ?? { getBatch: featuresRepo.getBatch };
     this.lyrics = opts.lyrics ?? { getBatch: lyricsRepo.getBatch };
+    // Default stub avoids getDb in unit tests; createOrchestrator injects the real repo.
+    this.profiles =
+      opts.profiles ?? { getBatch: async () => new Map<string, TrackProfile>() };
     this.makeProvider = opts.makeProvider ?? createEmbeddingProvider;
   }
 
@@ -131,20 +173,39 @@ export class LibraryAgent {
     currentPAD: PAD,
     limit = DEFAULT_LIMIT,
     excludeIds?: ReadonlySet<string>,
+    intent?: ActiveIntent,
   ): Promise<LibraryTrack[]> {
     const tokens = tokenize(target);
     const allRaw = await this.repo.listAll();
-    const all =
+    let all =
       excludeIds && excludeIds.size > 0
         ? allRaw.filter((t) => !excludeIds.has(t.id))
         : allRaw;
     if (all.length === 0) return [];
+
     const ids = all.map((t) => t.id);
+    const profilesByTrack = await this.profiles
+      .getBatch(ids)
+      .catch(() => new Map<string, TrackProfile>());
+
+    // Hard language filter when ActiveIntent demands it AND we have enough
+    // annotated matches. Otherwise fall through to soft boost so an empty /
+    // partially-annotated library still plays something.
+    const wantLangs = intent?.constraints.languages;
+    if (wantLangs && wantLangs.length > 0) {
+      const hard = all.filter((t) =>
+        matchesHardLanguage(profilesByTrack.get(t.id), wantLangs),
+      );
+      if (hard.length >= Math.min(3, limit)) {
+        all = hard;
+      }
+    }
 
     const provider = await this.makeProvider().catch(() => null);
+    const scoredIds = all.map((t) => t.id);
     const [featuresByTrack, lyricsByTrack, targetVec] = await Promise.all([
-      this.features.getBatch(ids).catch(() => new Map<string, LibraryFeatures>()),
-      this.lyrics.getBatch(ids).catch(() => new Map<string, LyricsEmbedding>()),
+      this.features.getBatch(scoredIds).catch(() => new Map<string, LibraryFeatures>()),
+      this.lyrics.getBatch(scoredIds).catch(() => new Map<string, LyricsEmbedding>()),
       provider
         ? provider.embed(target).catch(() => null)
         : Promise.resolve(null),
@@ -166,8 +227,9 @@ export class LibraryAgent {
     }
     const anySem = targetVec !== null && lyricsByTrack.size > 0;
     const bpmTarget = padToBpm(currentPAD);
+    const anyIntentBoost = Boolean(intent) && profilesByTrack.size > 0;
 
-    if (!anyKeyword && !anyFeatures && !anySem && !anyBpm) {
+    if (!anyKeyword && !anyFeatures && !anySem && !anyBpm && !anyIntentBoost) {
       return shuffle(all).slice(0, limit);
     }
 
@@ -190,7 +252,9 @@ export class LibraryAgent {
       ) {
         scores.sem = 1 - cosineDistance(targetVec, lyrEmb.embedding);
       }
-      return { t, score: combineWeighted(scores) };
+      const base = combineWeighted(scores);
+      const boost = intentMatchBoost(profilesByTrack.get(t.id), intent);
+      return { t, score: base + boost };
     });
 
     scored.sort((a, b) => b.score - a.score);

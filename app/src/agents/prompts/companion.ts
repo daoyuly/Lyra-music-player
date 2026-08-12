@@ -20,7 +20,9 @@ export const COMPANION_SYSTEM_PROMPT = `你是 Lyra —— 一个用歌回话的
   "更慢一点"/"更安静" → verbal_intent = "adjust_calmer"
   "更快一点"/"更热闹" → verbal_intent = "adjust_livelier"
   "类似的"/"再给一首这种" → verbal_intent = "similar"
+  "别放粤语了"/"随便来点"/"不限语种"/"清空意图" → verbal_intent = "clear_intent"
   若无明确意图，verbal_intent = null
+- 如果材料里给了「当前活跃意图」,选歌必须优先满足它(语种/风格/场景)。auto-advance 时尤其如此——用户没再说话不等于意图解除。
 
 以 STRICT JSON 返回，形如:
 
@@ -29,7 +31,7 @@ export const COMPANION_SYSTEM_PROMPT = `你是 Lyra —— 一个用歌回话的
   "target_profile": "一段中文，30-80 字，描述你原本想找的歌的样子",
   "rationale": "写给用户看的一句话，15-40 中文字",
   "needed_shift": "接住|点燃|陪着|打断",
-  "verbal_intent": "switch|repeat|adjust_calmer|adjust_livelier|similar|null"
+  "verbal_intent": "switch|repeat|adjust_calmer|adjust_livelier|similar|clear_intent|null"
 }
 
 四种转变方向的含义:
@@ -52,4 +54,4 @@ export const COMPANION_SYSTEM_PROMPT = `你是 Lyra —— 一个用歌回话的
 
 不要在 JSON 前后加任何文本。不要用 markdown。`;
 
-export const COMPANION_JSON_SCHEMA_HINT = `Return JSON: { "song_id": "<id>", "target_profile": "<30-80 char description>", "rationale": "<15-40 char reason>", "needed_shift": "接住|点燃|陪着|打断", "verbal_intent": "switch|repeat|adjust_calmer|adjust_livelier|similar|null" }`;
+export const COMPANION_JSON_SCHEMA_HINT = `Return JSON: { "song_id": "<id>", "target_profile": "<30-80 char description>", "rationale": "<15-40 char reason>", "needed_shift": "接住|点燃|陪着|打断", "verbal_intent": "switch|repeat|adjust_calmer|adjust_livelier|similar|clear_intent|null" }`;

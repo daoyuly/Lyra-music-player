@@ -325,4 +325,40 @@ describe("LibraryAgent.prefilter", () => {
       expect(out[0].id).toBe("b");
     });
   });
+
+  describe("ActiveIntent language hard filter via DJ profiles", () => {
+    it("prefers tracks matching intent.languages when enough profiles exist", async () => {
+      const tracks = [
+        track("y1", "富士山下", "陈奕迅"),
+        track("y2", "海阔天空", "Beyond"),
+        track("y3", "喜欢你", "邓紫棋"),
+        track("m1", "晴天", "周杰伦"),
+        track("e1", "Hello", "Adele"),
+      ];
+      const profiles = new Map([
+        ["y1", { track_id: "y1", language: "yue" as const, genres: [], mood: [], scenes: [], era: null, vocal: "male" as const, energy_check: "mid" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+        ["y2", { track_id: "y2", language: "yue" as const, genres: [], mood: [], scenes: [], era: null, vocal: "group" as const, energy_check: "high" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+        ["y3", { track_id: "y3", language: "yue" as const, genres: [], mood: [], scenes: [], era: null, vocal: "female" as const, energy_check: "mid" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+        ["m1", { track_id: "m1", language: "cmn" as const, genres: [], mood: [], scenes: [], era: null, vocal: "male" as const, energy_check: "mid" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+        ["e1", { track_id: "e1", language: "en" as const, genres: [], mood: [], scenes: [], era: null, vocal: "female" as const, energy_check: "low" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+      ]);
+      const agent = new LibraryAgent({
+        repo: { listAll: async () => tracks },
+        profiles: { getBatch: async () => profiles },
+        makeProvider: async () => null,
+        features: { getBatch: async () => new Map() },
+        lyrics: { getBatch: async () => new Map() },
+      });
+      const out = await agent.prefilter("延续", neutralPAD, 5, undefined, {
+        rawText: "一直播放粤语歌曲",
+        constraints: { languages: ["yue"] },
+        persistence: "sticky",
+        source: "user-explicit",
+        createdAt: 0,
+        turnId: "t",
+      });
+      expect(out.every((t) => t.id.startsWith("y"))).toBe(true);
+      expect(out.length).toBe(3);
+    });
+  });
 });

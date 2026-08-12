@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { SECRET_KEYS, setSecret, getSecret } from "./secrets";
 import { importLibrary } from "../library/libraryScan";
 import { lyricsRefill } from "../library/lyricsRefill";
+import { profilesRefill } from "../library/annotateProfiles";
 import { reflectNow } from "../reflect/trigger";
 import { enableDynamicVolume, disableDynamicVolume } from "../audio/dynamicVolume";
 import { exportAllData, wipeAllData } from "./dataOps";
@@ -40,6 +41,7 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
   const [ollamaModel, setOllamaModel] = useState(DEFAULT_OLLAMA_MODEL);
   const [embeddingDirty, setEmbeddingDirty] = useState(false);
   const [refilling, setRefilling] = useState(false);
+  const [djRefilling, setDjRefilling] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [scanStatus, setScanStatus] = useState<string>("");
@@ -180,6 +182,20 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
       })
       .catch(() => setScanStatus("Refill failed silently — check console."))
       .finally(() => setRefilling(false));
+  };
+
+  const onDjRefill = () => {
+    if (djRefilling) return;
+    setDjRefilling(true);
+    setScanStatus("DJ is listening through the library…");
+    void profilesRefill()
+      .then((r) => {
+        setScanStatus(
+          `DJ profiles: ${r.succeeded} annotated, ${r.failed} failed (of ${r.started}).`,
+        );
+      })
+      .catch(() => setScanStatus("DJ annotate failed — check console / API key."))
+      .finally(() => setDjRefilling(false));
   };
 
   const onReflect = async () => {
@@ -474,6 +490,13 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
           }
         >
           {refilling ? "Refilling…" : "Refill missing lyrics embeddings"}
+        </button>
+        <button
+          onClick={onDjRefill}
+          disabled={djRefilling || !loaded}
+          title="让资深 DJ agent 批量标注曲库语种/风格/场景档案"
+        >
+          {djRefilling ? "DJ listening…" : "DJ 重新听一遍曲库"}
         </button>
       </div>
       <div className="settings-actions">
