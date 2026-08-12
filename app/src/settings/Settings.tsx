@@ -3,6 +3,9 @@ import { SECRET_KEYS, setSecret, getSecret } from "./secrets";
 import { importLibrary } from "../library/libraryScan";
 import { lyricsRefill } from "../library/lyricsRefill";
 import { reflectNow } from "../reflect/trigger";
+import { enableDynamicVolume, disableDynamicVolume } from "../audio/dynamicVolume";
+import { exportAllData, wipeAllData } from "./dataOps";
+import { DEFAULT_OLLAMA_ENDPOINT, DEFAULT_OLLAMA_MODEL } from "../providers/ollama";
 
 type EmbeddingChoice = "" | "zhipu" | "openai";
 
@@ -30,6 +33,11 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
   const [openaiKey, setOpenaiKey] = useState("");
   const [weeklyDir, setWeeklyDir] = useState("");
   const [weeklyAuto, setWeeklyAuto] = useState(true);
+  const [dynamicVolume, setDynamicVolume] = useState(false);
+  const [piAgentEnabled, setPiAgentEnabled] = useState(false);
+  const [ollamaEnabled, setOllamaEnabled] = useState(false);
+  const [ollamaEndpoint, setOllamaEndpoint] = useState(DEFAULT_OLLAMA_ENDPOINT);
+  const [ollamaModel, setOllamaModel] = useState(DEFAULT_OLLAMA_MODEL);
   const [embeddingDirty, setEmbeddingDirty] = useState(false);
   const [refilling, setRefilling] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -40,7 +48,7 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
     if (!open) return;
     let cancelled = false;
     (async () => {
-      const [a, d, z, lib, dt, dim, pe, pm, ep, zek, ok, wd, wa, we, wlat, wlon, wt] = await Promise.all([
+      const [a, d, z, lib, dt, dim, pe, pm, ep, zek, ok, wd, wa, we, wlat, wlon, wt, dv, pia, oe, oep, om] = await Promise.all([
         getSecret(SECRET_KEYS.anthropicApiKey),
         getSecret(SECRET_KEYS.deepseekApiKey),
         getSecret(SECRET_KEYS.zhipuApiKey),
@@ -58,6 +66,11 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
         getSecret(SECRET_KEYS.weatherLat),
         getSecret(SECRET_KEYS.weatherLon),
         getSecret(SECRET_KEYS.weeklyTime),
+        getSecret(SECRET_KEYS.dynamicVolumeEnabled),
+        getSecret(SECRET_KEYS.piAgentEnabled),
+        getSecret(SECRET_KEYS.ollamaEnabled),
+        getSecret(SECRET_KEYS.ollamaEndpoint),
+        getSecret(SECRET_KEYS.ollamaModel),
       ]);
       if (cancelled) return;
       setAnthropic(a ?? "");
@@ -78,6 +91,14 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
       setOpenaiKey(ok ?? "");
       setWeeklyDir(wd ?? "");
       setWeeklyAuto(wa !== "false");
+      // 动态音量默认关(需要辅助功能权限,不能默认开)
+      setDynamicVolume(dv === "true");
+      // pi Agent 默认关 — 实验性功能
+      setPiAgentEnabled(pia === "true");
+      // Ollama 默认关 — 用户明确启用才生效
+      setOllamaEnabled(oe === "true");
+      setOllamaEndpoint(oep ?? DEFAULT_OLLAMA_ENDPOINT);
+      setOllamaModel(om ?? DEFAULT_OLLAMA_MODEL);
       setEmbeddingDirty(false);
       setLoaded(true);
     })();
@@ -113,6 +134,19 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
       await setSecret(SECRET_KEYS.openaiApiKey, openaiKey);
       await setSecret(SECRET_KEYS.weeklyDirOverride, weeklyDir);
       await setSecret(SECRET_KEYS.weeklyAutoEnabled, weeklyAuto ? "true" : "false");
+      await setSecret(SECRET_KEYS.dynamicVolumeEnabled, dynamicVolume ? "true" : "false");
+      await setSecret(SECRET_KEYS.piAgentEnabled, piAgentEnabled ? "true" : "false");
+      await setSecret(SECRET_KEYS.ollamaEnabled, ollamaEnabled ? "true" : "false");
+      await setSecret(SECRET_KEYS.ollamaEndpoint, ollamaEndpoint || DEFAULT_OLLAMA_ENDPOINT);
+      await setSecret(SECRET_KEYS.ollamaModel, ollamaModel || DEFAULT_OLLAMA_MODEL);
+      // 立即生效,不用重启。enable 会触发 macOS 辅助功能权限请求(仅首次)。
+      // 出错不阻塞保存流程 —— 用户下次开 app 会通过 boot hook 再试一次。
+      try {
+        if (dynamicVolume) await enableDynamicVolume();
+        else await disableDynamicVolume();
+      } catch (err) {
+        console.warn("[lyra] dynamic volume toggle failed:", err);
+      }
       setEmbeddingDirty(false);
       if (libraryPath) {
         setScanStatus("Scanning…");
@@ -162,6 +196,30 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
     }
   };
 
+  const onExport = async () => {
+    try {
+      const { path, size } = await exportAllData();
+      const mb = (size / (1024 * 1024)).toFixed(2);
+      setScanStatus(`已导出到 ${path}，${mb} MB`);
+    } catch (err) {
+      if (err instanceof Error && err.message === "Export cancelled") return;
+      setScanStatus(`导出失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const onWipe = async () => {
+    const confirmed = window.prompt(
+      '此操作将清空全部 Lyra 数据（对话记录、记忆、状态等）且不可恢复。\n确认请输入 "delete"：',
+    );
+    if (confirmed !== "delete") return;
+    try {
+      await wipeAllData();
+      setScanStatus("数据已清空。重启 Lyra 后生效。");
+    } catch (err) {
+      setScanStatus(`清空失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   return (
     <div role="dialog" aria-label="Settings" className="settings-modal">
       <h2>Settings</h2>
@@ -177,6 +235,39 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
       </label>
       {scanStatus && (
         <p style={{ opacity: 0.7, fontSize: "0.85em" }}>{scanStatus}</p>
+      )}
+      <label>
+        <input
+          type="checkbox"
+          checked={ollamaEnabled}
+          onChange={(e) => setOllamaEnabled(e.target.checked)}
+          disabled={!loaded}
+        />
+        Ollama（本地，无需 API key）
+      </label>
+      {ollamaEnabled && (
+        <>
+          <label>
+            Ollama endpoint
+            <input
+              type="text"
+              value={ollamaEndpoint}
+              onChange={(e) => setOllamaEndpoint(e.target.value)}
+              disabled={!loaded}
+              placeholder={DEFAULT_OLLAMA_ENDPOINT}
+            />
+          </label>
+          <label>
+            Ollama model
+            <input
+              type="text"
+              value={ollamaModel}
+              onChange={(e) => setOllamaModel(e.target.value)}
+              disabled={!loaded}
+              placeholder={DEFAULT_OLLAMA_MODEL}
+            />
+          </label>
+        </>
       )}
       <label>
         Anthropic API Key
@@ -280,6 +371,24 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
         />
       </label>
       <label>
+        <input
+          type="checkbox"
+          checked={dynamicVolume}
+          onChange={(e) => setDynamicVolume(e.target.checked)}
+          disabled={!loaded}
+        />
+        Dynamic volume — 键盘越忙，音乐越轻（首次启用需在系统设置里授予辅助功能权限）
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={piAgentEnabled}
+          onChange={(e) => setPiAgentEnabled(e.target.checked)}
+          disabled={!loaded}
+        />
+        Pi Agent（实验性）— EmotionAgent + CompanionAgent 走 pi 运行时（tool calling + 事件流可见于 <code>/explorer</code> → Agent runtime），出问题关掉即回退 legacy
+      </label>
+      <label>
         Lyrics embedding provider
         <select
           value={embeddingChoice}
@@ -373,6 +482,18 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
         </button>
       </div>
       <div className="settings-actions">
+        <button onClick={onExport} disabled={!loaded}>
+          导出全部数据
+        </button>
+        <button
+          onClick={onWipe}
+          disabled={!loaded}
+          style={{ color: "var(--color-danger, #c0392b)" }}
+        >
+          清空全部数据
+        </button>
+      </div>
+      <div className="settings-actions">
         <button onClick={onClose} disabled={saving}>
           Cancel
         </button>
@@ -380,6 +501,19 @@ export function Settings({ open, onClose, onSchedulerUpdate }: SettingsProps) {
           Save
         </button>
       </div>
+      <p
+        data-testid="settings-footer-easter-egg"
+        style={{
+          marginTop: "1.5rem",
+          textAlign: "center",
+          opacity: 0.42,
+          fontSize: "0.72rem",
+          letterSpacing: "0.06em",
+          fontStyle: "italic",
+        }}
+      >
+        960 · 8849 &nbsp;—&nbsp; 一寸国土，一座珠峰
+      </p>
     </div>
   );
 }

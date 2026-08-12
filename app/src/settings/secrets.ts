@@ -20,6 +20,11 @@ export const SECRET_KEYS = {
   weatherEnabled: "perception.weatherEnabled",
   weatherLat: "perception.weatherLat",
   weatherLon: "perception.weatherLon",
+  dynamicVolumeEnabled: "audio.dynamicVolumeEnabled",
+  piAgentEnabled: "agent.piEnabled",
+  ollamaEnabled: "provider.ollama.enabled",
+  ollamaEndpoint: "provider.ollama.endpoint",
+  ollamaModel: "provider.ollama.model",
 } as const;
 
 export async function setSecret(key: string, value: string): Promise<void> {

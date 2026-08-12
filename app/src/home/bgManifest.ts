@@ -11,10 +11,7 @@
 import bg1 from "../assets/bg/1.jpg";
 import bg2 from "../assets/bg/2.png";
 import bg3 from "../assets/bg/3.jpg";
-import bg4 from "../assets/bg/4.jpeg";
-import bg5 from "../assets/bg/5.jpg";
-import bg6 from "../assets/bg/6.jpeg";
-import bg7 from "../assets/bg/7.jpg";
+import bg4 from "../assets/bg/4.jpg";
 
 export type BgRipple = {
   xFrac: number;
@@ -94,7 +91,7 @@ export const BG_ENTRIES: BgEntry[] = [
       waterShimmer: { topFrac: 0.72, bottomFrac: 1.0 },
     },
   },
-  // 4.jpeg — 楼阁密林 + 双瀑布
+  // 4.jpg — 楼阁密林 + 双瀑布（沿用旧 4.jpeg 的动效配方；若已换图请重配）
   {
     url: bg4,
     config: {
@@ -105,38 +102,19 @@ export const BG_ENTRIES: BgEntry[] = [
       mist: { topFrac: 0.35, bottomFrac: 0.55 },
     },
   },
-  // 5.jpg — 极简山 + 红日 + 湖
-  {
-    url: bg5,
-    config: {
-      sunBreathe: {
-        xFrac: 0.68,
-        yFrac: 0.42,
-        radiusPx: 70,
-        color: "220, 80, 60",
-      },
-      waterShimmer: { topFrac: 0.62, bottomFrac: 1.0 },
-    },
-  },
-  // 6.jpeg — 密林山水 (无水无船)
-  {
-    url: bg6,
-    config: {
-      mist: { topFrac: 0.30, bottomFrac: 0.60 },
-    },
-  },
-  // 7.jpg — 冬景 + 飞鸟 + 亭 + 湖
-  {
-    url: bg7,
-    config: {
-      birds: { yFrac: 0.13, count: 6, speed: 24 },
-      waterShimmer: { topFrac: 0.78, bottomFrac: 1.0 },
-    },
-  },
 ];
 
 // 模块级随机选中 — 一个 App 会话固定一张。冷启动重新求值 → 每次开 App 换图。
-export const SESSION_BG: BgEntry | null =
-  BG_ENTRIES.length === 0
-    ? null
-    : BG_ENTRIES[Math.floor(Math.random() * BG_ENTRIES.length)] ?? null;
+// Dev 覆盖:URL 上带 ?bg=1..N 时锁定到指定序号(用于逐张验证背景)。
+function pickSessionBg(): BgEntry | null {
+  if (BG_ENTRIES.length === 0) return null;
+  const search = typeof window !== "undefined" ? window.location.search : "";
+  const m = search.match(/[?&]bg=(\d+)/);
+  if (m) {
+    const idx = parseInt(m[1], 10) - 1;
+    if (idx >= 0 && idx < BG_ENTRIES.length) return BG_ENTRIES[idx] ?? null;
+  }
+  return BG_ENTRIES[Math.floor(Math.random() * BG_ENTRIES.length)] ?? null;
+}
+
+export const SESSION_BG: BgEntry | null = pickSessionBg();

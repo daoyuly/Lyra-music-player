@@ -19,9 +19,11 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rodio = { version = "0.19", default-features = false, features = ["symphonia-all"] }
@@ -31,6 +33,9 @@ walkdir = "2"
 lofty = "0.22"
 tokio = { version = "1", features = ["fs"] }
 rustfft = "6"
+# 全局键盘监听 —— 用于动态音量的活动信号源。macOS 首次调用 listen 时会请求
+# 辅助功能权限；未获权限时 listen 返回 Err，我们做静默降级。
+rdev = "0.5"
 
 [dev-dependencies]
 tempfile = "3"

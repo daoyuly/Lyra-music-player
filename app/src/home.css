@@ -1,4 +1,4 @@
-/* home.css — design tokens per docs/superpowers/specs/2026-07-06-v0.1-home-ui-design.md */
+/* home.css — design tokens per docs/superpowers/specs/archive/2026-07-06-v0.1-home-ui-design.md */
 
 @import "@fontsource/lora/400-italic.css";
 
@@ -34,7 +34,7 @@
   --lyra-space-cover-to-band: 36px;
   --lyra-space-band-to-song: 28px;
   --lyra-space-song-to-note: 18px;
-  --lyra-space-trace-to-input: 44px;
+  --lyra-space-note-to-input: 44px;
   --lyra-trace-item-size: 16px;
   --lyra-trace-item-gap: 14px;
   --lyra-trace-count: 5;
@@ -85,4 +85,20 @@ button {
 
 .lyra-cover-breath {
   animation: lyra-cover-breath 8s ease-in-out infinite;
+}
+
+/* "此刻的你" 墨环 — 极缓的一呼一吸，透明度 + 极小缩放 */
+@keyframes lyra-self-breath {
+  from {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 0.7;
+    transform: scale(1.08);
+  }
+}
+
+.lyra-self-breath {
+  animation: lyra-self-breath 3.2s ease-in-out infinite alternate;
 }

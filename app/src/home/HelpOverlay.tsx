@@ -49,10 +49,13 @@ export function HelpOverlay({ open, onClose }: HelpOverlayProps) {
             <li><code>/help</code> — 打开这份说明</li>
             <li><code>/settings</code> — 密钥、曲库、梦时刻、感知开关</li>
             <li><code>/stats</code> — LLM 调用与消耗</li>
-            <li><code>/explorer</code> — 数据浏览器（轮次、记忆、灵魂、显著性…）</li>
+            <li><code>/explorer</code> — 数据浏览器（播放记录、Agent runtime、轮次、记忆、灵魂、显著性、LLM 用量…）</li>
             <li><code>/week</code> — 打开我给你写的这一周的信（最近 7 天） · 若数据不足或我这周没写好，会展示一封短的道歉</li>
             <li><code>/reload-musics</code> — 清掉旧曲库记录，从设置里的曲库路径重新扫描 · 用在你重命名/搬动了歌曲之后</li>
           </ul>
+          <p style={hint}>
+            <code>/settings</code> 里还有一个 <em>Pi Agent（实验性）</em> 开关 —— 打开后 EmotionAgent + CompanionAgent 会走带 tool calling / 事件流的新运行时，出问题关掉即回退。事件流可在 <code>/explorer</code> → Agent runtime 里查看。
+          </p>
           <p style={hint}>
             快捷键：<kbd>⌘=</kbd> 设置 · <kbd>⌘⇧D</kbd> 数据浏览器 ·{" "}
             <kbd>⌘⇧E</kbd> Roadmap · <kbd>⌘⇧R</kbd> 现在反思一次 ·{" "}

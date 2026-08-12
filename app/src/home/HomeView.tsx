@@ -6,8 +6,6 @@ import { ShanShuiCanvas } from "./ShanShuiCanvas";
 import { EmotionLightBand } from "./EmotionLightBand";
 import { SongInfo } from "./SongInfo";
 import { SmallNote } from "./SmallNote";
-import { TraceStrip } from "./TraceStrip";
-import type { TraceStripItem } from "./TraceStrip";
 import { InputBox } from "./InputBox";
 import { bindGlobalKeys } from "./keyboard";
 import { parseSlashCommand } from "./slashCommand";
@@ -17,6 +15,7 @@ import * as turnRepo from "../db/repo/turnRepo";
 import { songDisplayTitle, songDisplayArtist } from "../library/display";
 import { reloadLibrary, type ReloadProgress } from "../library/reloadLibrary";
 import type { PAD } from "../types";
+import { DemoMode } from "./DemoMode";
 
 const ZERO_PAD: PAD = { p: 0, a: 0, d: 0 };
 
@@ -36,7 +35,7 @@ function reloadNoteText(p: ReloadProgress): string {
 }
 
 export type DataExplorerTabId =
-  | "turns" | "soul" | "salient" | "library" | "lyrics_emb"
+  | "playback" | "turns" | "soul" | "salient" | "library" | "lyrics_emb"
   | "perception" | "roadmap" | "features_req" | "engineer"
   | "llm_usage" | "reasoning" | "memory_md";
 
@@ -90,7 +89,6 @@ function LiveHomeView({
     // SmallNote text take over again.
     setTimeout(() => setReloadStatus(null), 5000);
   };
-  const [traceItems, setTraceItems] = useState<TraceStripItem[]>([]);
   const [historicalPads, setHistoricalPads] = useState<PAD[]>([]);
   const [songInfoVisible, setSongInfoVisible] = useState(false);
 
@@ -112,13 +110,10 @@ function LiveHomeView({
     return () => clearTimeout(t);
   }, [playingSongId, pendingSongId]);
 
-  // Refresh trace + emotion history whenever state transitions to playing
+  // Refresh emotion history whenever state transitions to playing
   useEffect(() => {
     if (state.kind === "playing") {
       turnRepo.listRecentTurns(20).then((turns) => {
-        setTraceItems(
-          turns.slice(0, 5).map((t) => ({ id: t.id, coverUrl: null })),
-        );
         // Reverse so oldest is drawn first, newest last (right side of band)
         setHistoricalPads(
           turns.map((t) => t.current_emotion.pad).reverse(),
@@ -204,8 +199,10 @@ function LiveHomeView({
       ? "rgba(200,80,80,0.75)"
       : undefined;
 
-  // §7 idle empty state — sparser layout when no turns yet
-  const isSparseIdle = state.kind === "idle" && traceItems.length === 0;
+  // §7 idle empty state — sparser layout when no turns yet.
+  // historicalPads is only populated on state→playing, so on cold boot it's
+  // empty and we render the sparse "Lyra 在听" view.
+  const isSparseIdle = state.kind === "idle" && historicalPads.length === 0;
 
   if (isSparseIdle) {
     return (
@@ -233,7 +230,7 @@ function LiveHomeView({
               fontFamily: "var(--lyra-note-family)",
               fontStyle: "italic",
               letterSpacing: "0.04em",
-              marginBottom: "var(--lyra-space-trace-to-input)",
+              marginBottom: "var(--lyra-space-note-to-input)",
               opacity: 0.7,
             }}
           >
@@ -281,8 +278,7 @@ function LiveHomeView({
         <div style={{ height: "var(--lyra-space-song-to-note)" }} />
         <SmallNote text={noteText} color={noteColor} />
         <div style={{ flex: 1 }} />
-        <TraceStrip items={traceItems} />
-        <div style={{ height: "var(--lyra-space-trace-to-input)" }} />
+        <div style={{ height: "var(--lyra-space-note-to-input)" }} />
         <InputBox onSubmit={submit} />
       </div>
     </AmbientBackground>
@@ -292,12 +288,26 @@ function LiveHomeView({
 // ── Cold-boot placeholder (no providers configured) ───────────────────────────
 
 function ColdBootView({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const [showDemo, setShowDemo] = useState(false);
+
   useEffect(() => {
     return bindGlobalKeys({
       onOpenSettings,
       onTogglePlayback: () => {},
     });
   }, [onOpenSettings]);
+
+  if (showDemo) {
+    return (
+      <DemoMode
+        onClose={() => setShowDemo(false)}
+        onOpenSettings={() => {
+          setShowDemo(false);
+          onOpenSettings();
+        }}
+      />
+    );
+  }
 
   return (
     <AmbientBackground pad={ZERO_PAD}>
@@ -356,6 +366,19 @@ function ColdBootView({ onOpenSettings }: { onOpenSettings: () => void }) {
           <span style={{ textDecoration: "underline" }}>
             Cmd+= to open Settings.
           </span>
+        </p>
+        <p
+          data-testid="cold-boot-demo-link"
+          onClick={() => setShowDemo(true)}
+          style={{
+            marginTop: "0.75rem",
+            opacity: 0.5,
+            fontSize: "0.8rem",
+            cursor: "pointer",
+            fontFamily: "var(--lyra-note-family, monospace)",
+          }}
+        >
+          先试 30 秒 →
         </p>
       </div>
     </AmbientBackground>

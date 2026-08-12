@@ -108,6 +108,11 @@ test(lyra):     测试
 chore(lyra):    构建、依赖、工具
 ```
 
+## 安装包
+- 右键 -> 打开
+- xattr Lyra.app` 去掉 Gatekeeper 隔离。
+
+
 ## 贡献
 
 1. 从 `main` 拉出分支：`git checkout -b feat/lyra-my-feature`

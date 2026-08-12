@@ -29,8 +29,13 @@ import type {
 } from "../db/repo/llmUsageRepo";
 import { readMemoryFile } from "../memory/fileIO";
 import { EmotionDashboard } from "./EmotionDashboard";
+import * as agentRunsRepo from "../db/repo/agentRunsRepo";
+import type { AgentRun } from "../db/repo/agentRunsRepo";
+import * as productEventsRepo from "../db/repo/productEventsRepo";
+import type { ProductEvent } from "../db/repo/productEventsRepo";
 
 type TabId =
+  | "playback"
   | "turns"
   | "soul"
   | "salient"
@@ -43,9 +48,14 @@ type TabId =
   | "engineer"
   | "llm_usage"
   | "reasoning"
-  | "memory_md";
+  | "memory_md"
+  | "agent_runtime"
+  | "product_events";
 
 const TABS: { id: TabId; label: string }[] = [
+  { id: "playback", label: "播放记录" },
+  { id: "agent_runtime", label: "Agent runtime" },
+  { id: "product_events", label: "产品埋点" },
   { id: "turns", label: "对话回合" },
   { id: "soul", label: "灵魂状态" },
   { id: "salient", label: "显著时刻" },
@@ -72,7 +82,7 @@ export function DataExplorer({
   onClose,
   initialTab,
 }: DataExplorerProps) {
-  const [tab, setTab] = useState<TabId>(initialTab ?? "turns");
+  const [tab, setTab] = useState<TabId>(initialTab ?? "playback");
   // If parent passes a fresh initialTab when opening, honor it.
   useEffect(() => {
     if (open && initialTab) setTab(initialTab);
@@ -191,6 +201,9 @@ export function DataExplorer({
           padding: "1rem 1.5rem",
         }}
       >
+        {tab === "playback" && (
+          <PlaybackLogPanel expandedId={expandedRowId} onToggle={toggleRow} />
+        )}
         {tab === "turns" && (
           <TurnsPanel expandedId={expandedRowId} onToggle={toggleRow} />
         )}
@@ -222,6 +235,12 @@ export function DataExplorer({
           <ReasoningTracesPanel expandedId={expandedRowId} onToggle={toggleRow} />
         )}
         {tab === "memory_md" && <MemoryMdPanel />}
+        {tab === "agent_runtime" && (
+          <AgentRuntimePanel expandedId={expandedRowId} onToggle={toggleRow} />
+        )}
+        {tab === "product_events" && (
+          <ProductEventsPanel expandedId={expandedRowId} onToggle={toggleRow} />
+        )}
       </div>
     </div>
   );
@@ -290,6 +309,150 @@ type PanelProps = {
   expandedId: string | null;
   onToggle: (id: string) => void;
 };
+
+// "播放记录" — 一行一次播放:时间 / 曲目 / 用户query / 推荐理由 / 特征。
+// 与"对话回合"tab 的区别:这里聚焦"我到底听了什么"这条线,而非 turn 原始 dump。
+// 相邻行同曲会高亮,方便一眼看出"卡在同一首"的情况(见 Orchestrator auto-advance
+// 只排除上一首的已知限制)。
+function PlaybackLogPanel({ expandedId, onToggle }: PanelProps) {
+  const [rows, setRows] = useState<
+    | {
+        turn: DialogueTurn;
+        track: LibraryTrack | null;
+        features: LibraryFeatures | null;
+      }[]
+    | null
+  >(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const turns = await turnRepo.listRecentTurns(200);
+        const songIds = Array.from(
+          new Set(turns.map((t) => t.agent_response.song_id)),
+        );
+        // 曲库通常 <10k 首,一次 listAll 后做 Map 查找,和 LibraryPanel 一致。
+        const [allTracks, features] = await Promise.all([
+          libraryRepo.listAll(),
+          libraryFeaturesRepo.getBatch(songIds),
+        ]);
+        const trackMap = new Map(allTracks.map((t) => [t.id, t]));
+        setRows(
+          turns.map((t) => ({
+            turn: t,
+            track: trackMap.get(t.agent_response.song_id) ?? null,
+            features: features.get(t.agent_response.song_id) ?? null,
+          })),
+        );
+      } catch {
+        setRows([]);
+      }
+    })();
+  }, []);
+
+  if (rows === null) return <Empty label="加载中…" />;
+  if (rows.length === 0) return <Empty label="还没有播放记录" />;
+
+  return (
+    <>
+      <p style={{ opacity: 0.6, marginBottom: "0.75rem" }}>
+        最近 {rows.length} 条播放(新→旧)。相邻行同曲会淡红高亮 —
+        用来看"卡在同一首"的情况。
+      </p>
+      {rows.map((r, i) => {
+        const prev = i > 0 ? rows[i - 1] : null;
+        const repeatOfPrev =
+          prev !== null &&
+          prev.turn.agent_response.song_id === r.turn.agent_response.song_id;
+        const query = r.turn.user_utterance.content;
+        const isProactive =
+          r.turn.user_utterance.modality === "proactive-open";
+        const f = r.features;
+        const featStr = f
+          ? `bpm ${f.bpm ?? "—"} · energy ${(f.energy ?? 0).toFixed(2)} · valence ${(f.valence ?? 0).toFixed(2)}`
+          : "no features";
+        return (
+          <RowShell
+            key={r.turn.id}
+            id={r.turn.id}
+            expanded={expandedId === r.turn.id}
+            onToggle={onToggle}
+            summary={
+              <div
+                data-testid={
+                  repeatOfPrev ? "playback-row-repeat" : "playback-row"
+                }
+                style={{
+                  display: "flex",
+                  gap: "0.75rem",
+                  alignItems: "baseline",
+                  background: repeatOfPrev
+                    ? "rgba(229, 115, 115, 0.10)"
+                    : undefined,
+                  margin: repeatOfPrev ? "-0.75rem -1rem" : undefined,
+                  padding: repeatOfPrev ? "0.75rem 1rem" : undefined,
+                }}
+              >
+                <span
+                  style={{
+                    opacity: 0.5,
+                    minWidth: 150,
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {formatTs(r.turn.timestamp)}
+                </span>
+                <span style={{ flex: 1.4 }}>
+                  {r.track ? (
+                    <>
+                      <strong>{songDisplayTitle(r.track)}</strong>
+                      {" — "}
+                      <span style={{ opacity: 0.7 }}>
+                        {r.track.artist ?? "(无艺人)"}
+                      </span>
+                    </>
+                  ) : (
+                    <em style={{ opacity: 0.5 }}>
+                      (missing track {r.turn.agent_response.song_id.slice(0, 8)}…)
+                    </em>
+                  )}
+                </span>
+                <span style={{ flex: 1, opacity: 0.75 }}>
+                  {isProactive ? (
+                    <em style={{ opacity: 0.55 }}>(自动衔接)</em>
+                  ) : query ? (
+                    query
+                  ) : (
+                    <em style={{ opacity: 0.5 }}>(空 query)</em>
+                  )}
+                </span>
+                <span style={{ flex: 1.2, opacity: 0.7 }}>
+                  {r.turn.agent_response.rationale || (
+                    <em style={{ opacity: 0.5 }}>(no rationale)</em>
+                  )}
+                </span>
+                <span
+                  style={{
+                    opacity: 0.55,
+                    minWidth: 220,
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {featStr}
+                </span>
+              </div>
+            }
+            detail={{
+              turn: r.turn,
+              track: r.track,
+              features: r.features,
+            }}
+          />
+        );
+      })}
+    </>
+  );
+}
 
 function TurnsPanel({ expandedId, onToggle }: PanelProps) {
   const [rows, setRows] = useState<DialogueTurn[] | null>(null);
@@ -940,5 +1103,204 @@ function LyricsEmbeddingsPanel() {
         missing lyrics embeddings" 回填。
       </p>
     </div>
+  );
+}
+
+// ─── Agent Runtime Panel ─────────────────────────────────────────────────────
+
+// ─── Product Events Panel ─────────────────────────────────────────────────────
+
+function ProductEventsPanel({ expandedId, onToggle }: PanelProps) {
+  const [rows, setRows] = useState<ProductEvent[] | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setRows(await productEventsRepo.listRecent(200));
+      } catch {
+        setRows([]);
+      }
+    })();
+  }, []);
+
+  if (rows === null) return <Empty label="加载中…" />;
+  if (rows.length === 0) return <Empty label="还没有产品埋点事件" />;
+
+  // Aggregate count per kind
+  const kindCounts = new Map<string, number>();
+  for (const r of rows) {
+    kindCounts.set(r.kind, (kindCounts.get(r.kind) ?? 0) + 1);
+  }
+  const kindEntries = Array.from(kindCounts.entries()).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <>
+      {/* Stats bar */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "0.5rem",
+          marginBottom: "1rem",
+        }}
+      >
+        {kindEntries.map(([kind, n]) => (
+          <span
+            key={kind}
+            style={{
+              padding: "0.2rem 0.6rem",
+              borderRadius: 3,
+              background: "rgba(255,255,255,0.08)",
+              fontSize: "0.78rem",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {kind} <strong>{n}</strong>
+          </span>
+        ))}
+      </div>
+
+      <p style={{ opacity: 0.6, marginBottom: "0.75rem", fontSize: "0.8rem" }}>
+        最近 {rows.length} 条（新→旧）。点击行展开完整 payload。
+      </p>
+
+      {rows.map((r) => {
+        const rowId = `pe-${r.id}`;
+        let parsed: unknown = r.payload_json;
+        try {
+          parsed = JSON.parse(r.payload_json);
+        } catch { /* keep raw string */ }
+        const preview = r.payload_json.slice(0, 60) + (r.payload_json.length > 60 ? "…" : "");
+        return (
+          <RowShell
+            key={rowId}
+            id={rowId}
+            expanded={expandedId === rowId}
+            onToggle={onToggle}
+            summary={
+              <div style={{ display: "flex", gap: "0.75rem", alignItems: "baseline" }}>
+                <span
+                  style={{
+                    opacity: 0.5,
+                    minWidth: 160,
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {formatTs(r.ts)}
+                </span>
+                <span
+                  style={{
+                    padding: "0.05rem 0.5rem",
+                    borderRadius: 3,
+                    background: "rgba(255,255,255,0.08)",
+                    fontSize: "0.72rem",
+                    minWidth: 120,
+                  }}
+                >
+                  {r.kind}
+                </span>
+                <span style={{ opacity: 0.6, flex: 1, fontSize: "0.8rem" }}>
+                  {preview}
+                </span>
+              </div>
+            }
+            detail={parsed}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+function AgentRuntimePanel({ expandedId, onToggle }: PanelProps) {
+  const [rows, setRows] = useState<AgentRun[] | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setRows(await agentRunsRepo.listRecent(100));
+      } catch {
+        setRows([]);
+      }
+    })();
+  }, []);
+
+  if (rows === null) return <Empty label="加载中…" />;
+  if (rows.length === 0) return <Empty label="还没有 Agent 运行记录" />;
+
+  return (
+    <>
+      {rows.map((r) => {
+        const rowId = `agent-${r.id}`;
+        const duration =
+          r.ended_at !== null ? r.ended_at - r.started_at : null;
+        const eventCount = r.events_jsonl
+          ? r.events_jsonl.split("\n").filter(Boolean).length
+          : 0;
+        const parsedEvents: unknown[] = r.events_jsonl
+          ? r.events_jsonl
+              .split("\n")
+              .filter(Boolean)
+              .map((line) => {
+                try {
+                  return JSON.parse(line) as unknown;
+                } catch {
+                  return line;
+                }
+              })
+          : [];
+
+        return (
+          <RowShell
+            key={rowId}
+            id={rowId}
+            expanded={expandedId === rowId}
+            onToggle={onToggle}
+            summary={
+              <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+                <span style={{ opacity: 0.5, minWidth: 160 }}>
+                  {formatTs(r.started_at)}
+                </span>
+                <span
+                  style={{
+                    padding: "0.05rem 0.5rem",
+                    borderRadius: 3,
+                    background: "rgba(255,255,255,0.08)",
+                    fontSize: "0.72rem",
+                  }}
+                >
+                  {r.agent_kind}
+                </span>
+                <span
+                  style={{
+                    padding: "0.05rem 0.5rem",
+                    borderRadius: 3,
+                    fontSize: "0.72rem",
+                    background:
+                      r.stop_reason === "ok"
+                        ? "rgba(76,175,80,0.25)"
+                        : r.stop_reason === null
+                          ? "rgba(255,193,7,0.2)"
+                          : "rgba(244,67,54,0.2)",
+                  }}
+                >
+                  {r.stop_reason ?? "running"}
+                </span>
+                <span style={{ opacity: 0.6, minWidth: 70, fontVariantNumeric: "tabular-nums" }}>
+                  {duration !== null ? `${duration}ms` : "—"}
+                </span>
+                <span style={{ opacity: 0.55, fontSize: "0.8rem" }}>
+                  {eventCount} events
+                </span>
+                <span style={{ opacity: 0.45, flex: 1, fontSize: "0.75rem" }}>
+                  turn: {r.turn_id.slice(0, 8)}…
+                </span>
+              </div>
+            }
+            detail={parsedEvents}
+          />
+        );
+      })}
+    </>
   );
 }

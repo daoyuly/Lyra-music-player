@@ -49,6 +49,9 @@ pub struct AudioPlayer {
     current_id: Arc<AtomicU64>,
     // Per-playback pause state. Reset on every `play_file`.
     paused: Arc<Mutex<PauseState>>,
+    // 记忆化的当前音量。set_volume 更新它,play_file 在开新 Sink 后立刻应用,
+    // 避免动态音量控制器压低到 0.7 后,下一首恢复到 1.0。
+    volume: Arc<Mutex<f32>>,
     // Signal the audio thread to drop the OutputStream and exit.
     shutdown: Option<mpsc::Sender<()>>,
     // Kept so Drop can join the worker before the AudioPlayer disappears.
@@ -92,6 +95,7 @@ impl AudioPlayer {
             sink: Arc::new(Mutex::new(None)),
             current_id: Arc::new(AtomicU64::new(0)),
             paused: Arc::new(Mutex::new(PauseState::default())),
+            volume: Arc::new(Mutex::new(1.0)),
             shutdown: Some(shutdown_tx),
             worker: Some(worker),
         })
@@ -131,6 +135,9 @@ impl AudioPlayer {
         // but contributes silence until we append.
         let new_sink = Sink::try_new(&self.handle)
             .map_err(|e| AudioError::Stream(e.to_string()))?;
+        // 应用记忆化的音量:动态音量控制器把上一首压低到 0.7 之后,
+        // 新 Sink 默认是 1.0,不加这一步会在换歌瞬间"音量突然弹回来"。
+        new_sink.set_volume(*self.volume.lock().unwrap());
 
         // Bump id BEFORE swapping the sink. The previous watcher thread (if
         // any) may still be sleeping between polls; when it next reads
@@ -304,6 +311,26 @@ impl AudioPlayer {
     pub fn is_paused(&self) -> bool {
         let guard = self.sink.lock().unwrap();
         guard.as_ref().map_or(false, |s| s.is_paused())
+    }
+
+    /// 设置当前音量。值会被记住,任何新创建的 Sink 都会在开播时应用同一个音量,
+    /// 避免"换歌就恢复满音量"。安全范围 [0.0, 1.5],超出会被裁剪。
+    /// 从后台线程(动态音量控制器)频繁调用,只做短锁 + 一次赋值,不阻塞。
+    pub fn set_volume(&self, v: f32) {
+        let clamped = v.clamp(0.0, 1.5);
+        {
+            let mut vg = self.volume.lock().unwrap();
+            *vg = clamped;
+        }
+        let guard = self.sink.lock().unwrap();
+        if let Some(sink) = guard.as_ref() {
+            sink.set_volume(clamped);
+        }
+    }
+
+    /// 读回当前音量,主要给测试和调试用。
+    pub fn get_volume(&self) -> f32 {
+        *self.volume.lock().unwrap()
     }
 }
 

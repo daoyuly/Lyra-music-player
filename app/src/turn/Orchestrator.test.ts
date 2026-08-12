@@ -566,6 +566,58 @@ describe("Orchestrator T8: emotion prediction channel (auto-advance)", () => {
     // And audio played the OTHER song
     expect(deps.audio.playFile).toHaveBeenLastCalledWith("/b.mp3", null);
   });
+
+  // Regression: excluding only the just-played song still lets an A→B→A→B
+  // oscillation (or a same-song loop when candidates re-rank identically) run
+  // forever. The rolling window keeps all recently picked songs excluded so
+  // the recommender is forced to reach further into the candidate pool.
+  it("auto-advance excludes the last N picked songs, not just the most recent", async () => {
+    const t1: LibraryTrack = { id: "t1", path: "/a.mp3", origin: "local", added_at: 0, title: "T1" };
+    const t2: LibraryTrack = { id: "t2", path: "/b.mp3", origin: "local", added_at: 0, title: "T2" };
+    const t3: LibraryTrack = { id: "t3", path: "/c.mp3", origin: "local", added_at: 0, title: "T3" };
+    const prefilter = vi.fn(
+      async (
+        _target: unknown,
+        _pad: unknown,
+        _limit: unknown,
+        exclude?: ReadonlySet<string>,
+      ) => {
+        const all = [t1, t2, t3];
+        return exclude ? all.filter((t) => !exclude.has(t.id)) : all;
+      },
+    );
+    // Companion always picks the first candidate — deterministic on purpose,
+    // so without exclusion we would loop on t1.
+    const choose = vi.fn(async (input: { candidates: LibraryTrack[] }) => ({
+      song_id: input.candidates[0].id,
+      target_profile: "x",
+      rationale: "y",
+      needed_shift: "接住" as const,
+    }));
+    const deps = makeDeps({
+      library: { prefilter },
+      companion: { choose },
+    });
+    const orc = new Orchestrator(deps as any);
+
+    // Turn 1 → t1
+    await orc.onUserInput("start");
+    expect(deps.audio.playFile).toHaveBeenLastCalledWith("/a.mp3", null);
+
+    // Complete → auto-advance excludes {t1}, picks t2
+    await orc.onSongComplete();
+    expect(deps.audio.playFile).toHaveBeenLastCalledWith("/b.mp3", null);
+
+    // Complete again → auto-advance excludes {t1, t2}, picks t3
+    await orc.onSongComplete();
+    const thirdCall = prefilter.mock.calls[2] as unknown as [
+      unknown, unknown, unknown, ReadonlySet<string>,
+    ];
+    expect(thirdCall[3]).toBeInstanceOf(Set);
+    expect(thirdCall[3].has("t1")).toBe(true);
+    expect(thirdCall[3].has("t2")).toBe(true);
+    expect(deps.audio.playFile).toHaveBeenLastCalledWith("/c.mp3", null);
+  });
 });
 
 describe("Orchestrator T6: salient moment wiring", () => {

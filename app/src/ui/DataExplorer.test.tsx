@@ -88,10 +88,10 @@ describe("DataExplorer", () => {
     expect(screen.getByTestId("tab-memory_md")).toBeInTheDocument();
   });
 
-  it("starts on the turns tab and shows empty-state when there are no turns", async () => {
+  it("starts on the playback tab and shows empty-state when there are no plays", async () => {
     render(<DataExplorer open={true} onClose={() => {}} />);
     await waitFor(() =>
-      expect(screen.getByText(/还没有对话回合/)).toBeInTheDocument(),
+      expect(screen.getByText(/还没有播放记录/)).toBeInTheDocument(),
     );
   });
 

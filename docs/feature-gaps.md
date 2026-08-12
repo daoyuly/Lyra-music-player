@@ -14,7 +14,7 @@
 - ✅ `DreamScheduler`(`src/schedule/dreamScheduler.ts`)接管周日触发,`App.tsx` 已注入 `autoWeeklyTrigger`,配 last-run 时间戳去重。
 - ⚡ `HomeView.tsx:256` 的 `ColdBootView` 已经处理未配 provider 的首次启动(展示 Lyra 名 + tagline 「陪你说话,替你选一首歌」+ Cmd+= 打开设置提示),不完美但不阻塞。
 - ✅ 歌词语义嵌入完整:`computeLyricsEmbedding.ts` 串起 Rust USLT 提取 → JS `EmbeddingProvider.embed()` → `lyricsEmbeddingsRepo` f32 blob 持久化。Rust `lyrics.rs` 只做提取(正确职责分离)。
-- 📌 **额外发现**:`docs/superpowers/plans/2026-07-08-lyra-official-website.md` 已存在完整官网 plan(Vite workspace,8 节单页,反 chrome 设计),但**尚未实现**。这改变了 #6 的策略走向。
+- 📌 **额外发现**:`docs/superpowers/plans/archive/2026-07-08-lyra-official-website.md` 已存在完整官网 plan(Vite workspace,8 节单页,反 chrome 设计),但**尚未实现**。这改变了 #6 的策略走向。
 
 因此:P0 从 5 条 → **3 条**;P1 从 6 条 → **4 条**;全部真实缺口均为**发行/内容/工具面**,产品核心逻辑完整。**W-4 到 W0 的 5 周清单缩到 3 周**。
 
@@ -84,7 +84,7 @@
 ### #6 情绪化入口(README or 官网,二选一)
 
 - **文档承诺**:promotion-strategy.md「6. GitHub」段落写好了新版 README 顶端模板。
-- **实际状态**:README 233 行纯 dev 文档 + `docs/superpowers/plans/2026-07-08-lyra-official-website.md` 已有完整官网 plan(Vite workspace, 8 节单页, 反 chrome, Cloudflare Pages)但**未实现**。
+- **实际状态**:README 233 行纯 dev 文档 + `docs/superpowers/plans/archive/2026-07-08-lyra-official-website.md` 已有完整官网 plan(Vite workspace, 8 节单页, 反 chrome, Cloudflare Pages)但**未实现**。
 - **两条路径的取舍**:
   - **A. 只改 README**(1-2 天):把 promotion-strategy.md 那段 markdown 前置到顶端,W1 就够用
   - **B. 执行官网 plan**(1-2 周):Cloudflare Pages 承担「情绪门户」,README 保留纯 dev 文档

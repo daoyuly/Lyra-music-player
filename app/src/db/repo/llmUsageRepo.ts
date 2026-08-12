@@ -1,6 +1,10 @@
 // llmUsageRepo — one row per provider.chat call. Written by the
 // usage-logging decorator (providers/usageLogging.ts). Read by the
 // Data Explorer "LLM 用量" tab.
+//
+// Phase 4: agent_kind column is now live (migration 009_agent_runs.sql adds it
+// via ALTER TABLE llm_usage ADD COLUMN agent_kind TEXT).
+// "legacy" = classic provider.chat() path; "pi" = pi Agent path.
 
 import { getDb } from "../client";
 
@@ -13,16 +17,24 @@ export type LlmUsageEntry = {
   input_tokens: number;
   output_tokens: number;
   duration_ms: number | null;
+  /** Path discriminator added in migration 009. NULL for rows written before Phase 4. */
+  agent_kind?: "legacy" | "pi" | null;
 };
 
-export type LlmUsageInsert = Omit<LlmUsageEntry, "id">;
+export type LlmUsageInsert = Omit<LlmUsageEntry, "id"> & {
+  /**
+   * Path discriminator: "legacy" for provider.chat(), "pi" for pi Agent.
+   * Written to the agent_kind column (added in migration 009).
+   */
+  agentKind?: "legacy" | "pi";
+};
 
 export async function insert(entry: LlmUsageInsert): Promise<void> {
   const db = await getDb();
   await db.execute(
     `INSERT INTO llm_usage
-       (ts, provider, model, agent, input_tokens, output_tokens, duration_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (ts, provider, model, agent, input_tokens, output_tokens, duration_ms, agent_kind)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       entry.ts,
       entry.provider,
@@ -31,6 +43,7 @@ export async function insert(entry: LlmUsageInsert): Promise<void> {
       entry.input_tokens,
       entry.output_tokens,
       entry.duration_ms,
+      entry.agentKind ?? null,
     ],
   );
 }
@@ -39,7 +52,7 @@ export async function listRecent(limit = 200): Promise<LlmUsageEntry[]> {
   const db = await getDb();
   return db.select<LlmUsageEntry[]>(
     `SELECT id, ts, provider, model, agent,
-            input_tokens, output_tokens, duration_ms
+            input_tokens, output_tokens, duration_ms, agent_kind
      FROM llm_usage
      ORDER BY ts DESC
      LIMIT ?`,

@@ -139,6 +139,17 @@ valence (0..1)  ↔  pleasure  (-1..1)     targetP = (p + 1) / 2
 5. `foldReactionEvents` 合并到 turn
 6. `computeEmotionDelta(prePad, postPad)` → `soulStore.apply(delta)` 长期人格累积
 
+**pi Agent runtime（Phase 4 引入）**
+
+EmotionAgent 和 CompanionAgent 现在各自有两条执行路径：
+
+| 路径 | 触发条件 | 实现 |
+|---|---|---|
+| `legacy` | Settings toggle 关闭 pi 时 | `_analyzeLegacy` / `_chooseLegacy`（单次 provider.chat） |
+| `pi` | Settings toggle 开启 pi 时 | `agents/pi/pi-runtime.ts` 的 Agent + tool loop，通过 event stream 驱动 |
+
+两条路径在 `providers/` 层永久共存，不存在废弃计划。`AgentRunSink`（`app/src/turn/agentRunSink.ts`）统一接收 pi 路径的 event stream，双写到内存 Map（快速 UI 读取）和 `agent_runs` SQLite 表（持久化）。DataExplorer 的 **Agent runtime** 标签页可实时查看最近 100 条运行记录，包含时间 / agent_kind / stop_reason / 耗时 / event 数，点击展开可查看完整 JSONL 事件流。`agent_runs` 表保留 30 天，由 DreamScheduler 每日 trigger 时顺带清理。
+
 ### 2.6 表达层：把 PAD 画出来
 
 | 文件 | 表现形式 |
@@ -153,7 +164,7 @@ valence (0..1)  ↔  pleasure  (-1..1)     targetP = (p + 1) / 2
 
 ## 3. 中文情绪捕获技能（skill 化）
 
-已抽取为独立 skill，规格见 `docs/superpowers/specs/2026-07-08-emotion-capture-cn-skill.md`（297 行）。
+已抽取为独立 skill，规格见 `docs/superpowers/specs/archive/2026-07-08-emotion-capture-cn-skill.md`（297 行）。
 
 **baseline 指标（2026-07-08）**：
 
@@ -189,8 +200,8 @@ valence (0..1)  ↔  pleasure  (-1..1)     targetP = (p + 1) / 2
 | 情绪快照 codec | `app/src/db/codec/emotionSnapshot.ts:38` (轨迹跳过) |
 | 情绪 → 音乐主循环 | `app/src/turn/Orchestrator.ts` |
 | 山水画 PAD 映射 | `app/src/home/ShanShuiCanvas.tsx` |
-| 中文技能规格 & baseline | `docs/superpowers/specs/2026-07-08-emotion-capture-cn-skill.md` |
-| 歌词 embedding 设计 | `docs/superpowers/specs/2026-07-08-v0.2-sprint-10-lyrics-embedding-design.md` |
+| 中文技能规格 & baseline | `docs/superpowers/specs/archive/2026-07-08-emotion-capture-cn-skill.md` |
+| 歌词 embedding 设计 | `docs/superpowers/specs/archive/2026-07-08-v0.2-sprint-10-lyrics-embedding-design.md` |
 
 ---
 

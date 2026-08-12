@@ -244,6 +244,26 @@ function App() {
     };
   }, [orchestrator]);
 
+  // 动态音量:如果用户开过就自动挂上。首次挂载会请求 macOS 辅助功能权限;
+  // 未授权时 Rust 侧监听线程静默退出,音量维持 1.0,相当于无操作。
+  // 默认关(需要权限,不能默认开),用户在 Settings 里勾选即持久化。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const stored = await getSecret(SECRET_KEYS.dynamicVolumeEnabled).catch(() => null);
+      if (cancelled || stored !== "true") return;
+      try {
+        const { enableDynamicVolume } = await import("./audio/dynamicVolume");
+        await enableDynamicVolume();
+      } catch (err) {
+        console.warn("[lyra] dynamic volume boot enable failed:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Perception loop: install window listeners, tick every 60s to infer a
   // PerceptionBias from the rolling event window, and push the latest bias
   // to the Orchestrator. Respects SECRET_KEYS.perceptionEnabled (default ON).

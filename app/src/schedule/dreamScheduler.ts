@@ -6,7 +6,13 @@
  *
  * Both triggers are guarded by a single `_running` bool so concurrent
  * reflect calls are impossible.
+ *
+ * Phase 4: piggybacks a 30-day agent_runs retention purge on the daily
+ * reflect trigger (fire-and-forget, failure is non-fatal).
  */
+
+import { purgeOlderThan as purgeAgentRuns } from "../db/repo/agentRunsRepo";
+import { purgeOlderThan as purgeProductEvents } from "../db/repo/productEventsRepo";
 
 export type DreamSchedulerConfig = {
   /** "03:14" format — default daily reflect time */
@@ -201,6 +207,14 @@ export class DreamScheduler {
       this._lastDailyRunISO = todayISO;
       void this._config.setLastReflectDate?.(todayISO).catch(() => {});
     });
+
+    // Phase 4: purge agent_runs older than 30 days, piggybacking on daily trigger.
+    const cutoff = now.getTime() - 30 * 24 * 60 * 60 * 1000;
+    void purgeAgentRuns(cutoff).catch((err) =>
+      console.warn("[DreamScheduler] agent_runs purge failed:", err),
+    );
+    // Iter Phase 0.1: purge product_events older than 90 days.
+    void purgeProductEvents(now.getTime() - 90 * 24 * 3600 * 1000).catch(() => {});
   }
 
   private async _checkWeekly(now: Date): Promise<void> {

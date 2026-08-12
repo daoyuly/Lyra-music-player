@@ -7,6 +7,9 @@ vi.mock("../settings/secrets", () => ({
     anthropicApiKey: "provider.anthropic.apiKey",
     deepseekApiKey: "provider.deepseek.apiKey",
     zhipuApiKey: "provider.zhipu.apiKey",
+    ollamaEnabled: "provider.ollama.enabled",
+    ollamaEndpoint: "provider.ollama.endpoint",
+    ollamaModel: "provider.ollama.model",
   },
   getSecret: (...args: unknown[]) => getSecretMock(...args),
 }));
@@ -37,6 +40,7 @@ describe("bootProviders", () => {
     expect(report.registered).toEqual(["anthropic"]);
     expect(report.skipped).toEqual([
       { id: "deepseek", reason: "no-key" },
+      { id: "local-ollama", reason: "no-key" },
       { id: "zhipu", reason: "no-key" },
     ]);
     expect(registerMock).toHaveBeenCalledOnce();
@@ -55,6 +59,7 @@ describe("bootProviders", () => {
     expect(report.registered).toEqual(["deepseek"]);
     expect(report.skipped).toEqual([
       { id: "anthropic", reason: "no-key" },
+      { id: "local-ollama", reason: "no-key" },
       { id: "zhipu", reason: "no-key" },
     ]);
     expect(registerMock).toHaveBeenCalledOnce();
@@ -74,6 +79,7 @@ describe("bootProviders", () => {
     expect(report.skipped).toEqual([
       { id: "anthropic", reason: "no-key" },
       { id: "deepseek", reason: "no-key" },
+      { id: "local-ollama", reason: "no-key" },
     ]);
     expect(registerMock).toHaveBeenCalledOnce();
     expect(registerMock.mock.calls[0][0].id).toBe("zhipu");
@@ -90,7 +96,7 @@ describe("bootProviders", () => {
     const report = await bootProviders();
 
     expect(report.registered).toEqual(["anthropic", "deepseek", "zhipu"]);
-    expect(report.skipped).toEqual([]);
+    expect(report.skipped).toEqual([{ id: "local-ollama", reason: "no-key" }]);
     expect(registerMock).toHaveBeenCalledTimes(3);
   });
 
@@ -103,6 +109,7 @@ describe("bootProviders", () => {
     expect(report.skipped).toEqual([
       { id: "anthropic", reason: "no-key" },
       { id: "deepseek", reason: "no-key" },
+      { id: "local-ollama", reason: "no-key" },
       { id: "zhipu", reason: "no-key" },
     ]);
     expect(registerMock).not.toHaveBeenCalled();
@@ -123,6 +130,7 @@ describe("bootProviders", () => {
     expect(report.skipped).toEqual([
       { id: "anthropic", reason: "keychain-error" },
       { id: "deepseek", reason: "no-key" },
+      { id: "local-ollama", reason: "no-key" },
     ]);
   });
 });

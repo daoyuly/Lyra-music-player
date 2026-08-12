@@ -1,5 +1,7 @@
 pub mod audio;
 pub mod audio_features;
+pub mod data_export;
+pub mod dynamic_volume;
 pub mod library_scan;
 pub mod lyrics;
 pub mod secrets;
@@ -13,6 +15,7 @@ use tray::{TrayController, TrayState};
 
 pub struct AppState {
     pub audio: Arc<audio::AudioPlayer>,
+    pub dynamic_volume: Arc<dynamic_volume::DynamicVolumeController>,
 }
 
 #[tauri::command]
@@ -60,6 +63,29 @@ async fn audio_resume(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 async fn audio_is_paused(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.audio.is_paused())
+}
+
+#[tauri::command]
+async fn audio_set_volume(state: State<'_, AppState>, volume: f32) -> Result<(), String> {
+    state.audio.set_volume(volume);
+    Ok(())
+}
+
+/// 打开动态音量。首次调用会请求 macOS 辅助功能权限;权限未给时监听线程静默退出,
+/// 音量保持 1.0(相当于无操作)。用户后续在系统设置里授权后需要重启 Lyra。
+#[tauri::command]
+async fn dynamic_volume_enable(state: State<'_, AppState>) -> Result<(), String> {
+    let audio = state.audio.clone();
+    state.dynamic_volume.enable(move |mult| {
+        audio.set_volume(mult);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn dynamic_volume_disable(state: State<'_, AppState>) -> Result<(), String> {
+    state.dynamic_volume.disable();
+    Ok(())
 }
 
 #[tauri::command]
@@ -123,6 +149,7 @@ async fn check_panic_file(app: tauri::AppHandle) -> Result<bool, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(
@@ -178,6 +205,18 @@ pub fn run() {
                             sql: include_str!("../migrations/008_shift_feedback.sql"),
                             kind: MigrationKind::Up,
                         },
+                        Migration {
+                            version: 9,
+                            description: "agent_runs + llm_usage agent_kind (Phase 4)",
+                            sql: include_str!("../migrations/009_agent_runs.sql"),
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 10,
+                            description: "product analytics events (Iter Phase 0.1)",
+                            sql: include_str!("../migrations/010_product_events.sql"),
+                            kind: MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),
@@ -186,6 +225,7 @@ pub fn run() {
             let player = audio::AudioPlayer::new().expect("audio init");
             app.manage(AppState {
                 audio: Arc::new(player),
+                dynamic_volume: Arc::new(dynamic_volume::DynamicVolumeController::new()),
             });
             let tray_ctrl = TrayController::new(&app.handle()).expect("tray init");
             app.manage(TrayState(tray_ctrl));
@@ -208,6 +248,9 @@ pub fn run() {
             audio_pause,
             audio_resume,
             audio_is_paused,
+            audio_set_volume,
+            dynamic_volume_enable,
+            dynamic_volume_disable,
             secret_set,
             secret_get,
             secret_delete,
@@ -223,6 +266,8 @@ pub fn run() {
             weekly::open_weekly_html,
             weekly::path_exists,
             weekly::read_weekly_html,
+            data_export::data_export,
+            data_export::data_wipe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

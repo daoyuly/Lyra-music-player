@@ -3,6 +3,7 @@ import { getSecret, SECRET_KEYS } from "../settings/secrets";
 import { AnthropicProvider } from "./anthropic";
 import { DeepSeekProvider } from "./deepseek";
 import { ZhipuProvider } from "./zhipu";
+import { OllamaProvider, DEFAULT_OLLAMA_ENDPOINT, DEFAULT_OLLAMA_MODEL } from "./ollama";
 import { registry } from "./registry";
 import { withUsageLogging } from "./usageLogging";
 
@@ -69,6 +70,21 @@ export async function bootProviders(): Promise<BootReport> {
       registered.push(spec.id);
     }),
   );
+
+  // Ollama: no API key required — registered when ollamaEnabled === "true".
+  try {
+    const ollamaEnabled = await getSecret(SECRET_KEYS.ollamaEnabled);
+    if (ollamaEnabled === "true") {
+      const endpoint = (await getSecret(SECRET_KEYS.ollamaEndpoint)) ?? DEFAULT_OLLAMA_ENDPOINT;
+      const model = (await getSecret(SECRET_KEYS.ollamaModel)) ?? DEFAULT_OLLAMA_MODEL;
+      registry.register(withUsageLogging(new OllamaProvider({ endpoint, model })));
+      registered.push("local-ollama");
+    } else {
+      skipped.push({ id: "local-ollama", reason: "no-key" });
+    }
+  } catch {
+    skipped.push({ id: "local-ollama", reason: "keychain-error" });
+  }
 
   // Sort for stable output regardless of Promise resolution order.
   registered.sort();

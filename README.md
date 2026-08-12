@@ -31,6 +31,7 @@ The full app-level developer guide lives in [`app/README.md`](./app/README.md).
 
 - **Personal Music Library** — SQLite-backed local storage with metadata and listening history
 - **Emotional Agent State** — Tracks mood (PAD model), listening patterns, and aesthetic preferences
+- **pi Agent Runtime** — EmotionAgent and CompanionAgent run on the new pi streaming runtime; toggle between the pi path and the legacy path via Settings. Agent runs are persisted to SQLite and visible in the DataExplorer "Agent runtime" tab
 - **Multi-LLM Support** — Pluggable model providers (Anthropic, DeepSeek, Zhipu, DouBao, OpenAI, local Ollama)
 - **ShanShui Home** — Ink-wash canvas + photographic background layer set the tone of the room
 - **Weekly Letter** — Lyra writes you a first-person weekly reflection every Sunday

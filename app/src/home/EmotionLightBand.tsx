@@ -1,5 +1,15 @@
 import { padHSL, type PAD } from "../lib/color";
 
+// 情绪光带 — 从条形图重构成"墨迹带"（禅空虚净·灵）
+// 语义：
+//   - 每个采样点是一滴晕开的墨（内实心 + 外柔光晕），非硬边矩形
+//   - x：时间轴（左旧右新）
+//   - y：以中线为轴，用愉悦度做微幅漂移（喜上浮/悲下沉，最多 ±5px），不做柱状
+//   - 半径：兴奋度决定墨的湿度/体量
+//   - 色相：来自 padHSL（冷↔暖）
+// 最右侧那滴是"此刻的你"——多一圈极细的墨环，缓慢呼吸。
+// 用户看着自己被音乐推着走，是第三人称视角。
+
 const WIDTH = 400;
 const HEIGHT = 32;
 const MID = HEIGHT / 2;
@@ -12,6 +22,7 @@ export type EmotionLightBandProps = {
 export function EmotionLightBand({ samples }: EmotionLightBandProps) {
   const drawn = samples.slice(-MAX_SAMPLES);
   const columnW = WIDTH / MAX_SAMPLES;
+  const lastIdx = drawn.length - 1;
 
   return (
     <svg
@@ -21,47 +32,61 @@ export function EmotionLightBand({ samples }: EmotionLightBandProps) {
         width: "var(--lyra-band-width)",
         height: "var(--lyra-band-height)",
         display: "block",
+        // 允许墨的柔光晕溢出画面边缘，像宣纸上化开的墨
+        overflow: "visible",
       }}
       xmlns="http://www.w3.org/2000/svg"
     >
-      {/* Subtle band-area backdrop so the element reads as "a place" even
-          when data is thin. Omitted when empty (no bars, no hairline). */}
-      {drawn.length > 0 && (
-        <rect
-          x={0}
-          y={0}
-          width={WIDTH}
-          height={HEIGHT}
-          fill="rgba(0,0,0,0.04)"
-          rx={4}
-        />
-      )}
-      {/* Empty samples: reserve layout space only — no hairline. A midline
-          flash during thinking→playing felt like a UI bug when switching songs. */}
+      <defs>
+        {/* 墨的柔化：单遍高斯模糊足以把边缘化开，避免变成"色块" */}
+        <filter id="lyra-ink-soft" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="0.55" />
+        </filter>
+      </defs>
+
       {drawn.map((s, i) => {
         const { h, s: sat, l } = padHSL(s);
-        // Lower lightness so the color is legible on the light ambient bg,
-        // boost saturation for punch. Retain 40-72% lightness range.
-        const displayL = Math.max(40, Math.min(72, l * 0.72));
-        const displaySat = Math.max(30, Math.min(100, sat + 30));
+        const displayL = Math.max(38, Math.min(70, l * 0.7));
+        const displaySat = Math.max(30, Math.min(100, sat + 25));
         const color = `hsl(${h}, ${displaySat}%, ${displayL}%)`;
-        const halfBar = Math.max(6, Math.abs(s.p) * (HEIGHT / 2 - 2));
-        const y = s.p >= 0 ? MID - halfBar : MID;
-        const barH = halfBar;
-        // Wider bars for readability — fill ~70% of the column, then modulate
-        // by arousal.
-        const barW = Math.max(4, columnW * 0.7 + Math.abs(s.a) * 2);
+
+        const arousalAbs = Math.min(1, Math.abs(s.a));
+        const inkAlpha = 0.35 + arousalAbs * 0.45; // 兴奋度 → 墨浓
+        const r = 3.4 + arousalAbs * 3;            // 兴奋度 → 墨湿/体量
+        const yOffset = -s.p * 5;                  // 愉悦度 → 上浮/下沉（微幅）
+
+        const cx = i * columnW + columnW / 2;
+        const cy = MID + yOffset;
+        const isSelf = i === lastIdx;
+
         return (
-          <rect
-            data-testid={`emotion-band-sample-${i}`}
-            key={i}
-            x={i * columnW + columnW / 2 - barW / 2}
-            y={y}
-            width={barW}
-            height={barH}
-            fill={color}
-            rx={1.5}
-          />
+          <g key={i} data-testid={`emotion-band-sample-${i}`}>
+            {/* 外层柔光晕 */}
+            <circle
+              cx={cx}
+              cy={cy}
+              r={r * 1.75}
+              fill={color}
+              opacity={inkAlpha * 0.32}
+              filter="url(#lyra-ink-soft)"
+            />
+            {/* 内层墨点 */}
+            <circle cx={cx} cy={cy} r={r} fill={color} opacity={inkAlpha} />
+            {/* "此刻的你" — 只出现在最新一滴上，绕自身缓慢呼吸 */}
+            {isSelf && (
+              <circle
+                data-testid="emotion-band-self"
+                cx={cx}
+                cy={cy}
+                r={r + 2.6}
+                fill="none"
+                stroke={color}
+                strokeWidth={0.7}
+                className="lyra-self-breath"
+                style={{ transformOrigin: `${cx}px ${cy}px` }}
+              />
+            )}
+          </g>
         );
       })}
     </svg>

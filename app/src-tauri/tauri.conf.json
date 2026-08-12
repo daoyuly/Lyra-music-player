@@ -13,14 +13,14 @@
     "windows": [
       {
         "title": "Lyra",
-        "width": 520,
-        "height": 820,
+        "width": 960,
+        "height": 884.9,
         "minWidth": 480,
         "minHeight": 720
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.anthropic.com https://api.deepseek.com https://open.bigmodel.cn https://api.open-meteo.com; img-src 'self' asset: http://asset.localhost"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.anthropic.com https://api.deepseek.com https://open.bigmodel.cn https://api.open-meteo.com http://localhost:11434 http://127.0.0.1:11434; img-src 'self' asset: http://asset.localhost"
     }
   },
   "bundle": {

@@ -14,6 +14,10 @@ import type { ProactiveIntent } from "../proactive/types";
 import { setBreathing } from "../tray/trayBridge";
 import type { PerceptionBias } from "../perception/PerceptionAgent";
 import type { EventBus } from "../perception/events";
+// ── Pi migration prep imports (Phase 1) ──────────────────────────────────────
+import type { ToolContextFactory } from "./toolContextFactory";
+import type { TurnCancellationManager } from "./turnCancellation";
+import type { AgentRunSink } from "./agentRunSink";
 
 export type SoulStoreLike = {
   load(): Promise<SoulState>;
@@ -64,6 +68,27 @@ export type OrchestratorDeps = {
   };
   clock?: () => number;
   idGen?: () => string;
+  // ── Pi migration prep hooks (Phase 1) ──────────────────────────────────────
+  // These three deps are optional throughout Phase 1 (pi Agent not yet wired).
+  // Phase 2 (EmotionAgent migration) will make them required in the pi path.
+  // Passing them in Phase 1 is a no-op at runtime — they are accepted but not
+  // yet called. This lets callers begin constructing and injecting them before
+  // any behavioural change occurs.
+  //
+  // Wiring sequence (Phase 2, onUserInput):
+  //   turnCancellation.abortAndStart(newTurnId)   → AbortSignal for pi Agent
+  //   toolContextFactory.build(newTurnId)          → ToolContext for pi Agent
+  //   new Agent({...})
+  //   agent.subscribe(e => agentRunSink.record(runId, e))
+  //   await agent.prompt(...)
+  //   agentRunSink.end(runId, "ok" | "aborted_by_user")
+  //   turnCancellation.finish(newTurnId)
+  /** Factory that produces a per-turn ToolContext for pi Agent tool calls. */
+  toolContextFactory?: ToolContextFactory;
+  /** Manages the AbortController lifecycle across concurrent pi Agent turns. */
+  turnCancellation?: TurnCancellationManager;
+  /** Sink that records pi Agent event streams to agent_runs + EventBus. */
+  agentRunSink?: AgentRunSink;
 };
 
 const ZERO_PAD: PAD = { p: 0, a: 0, d: 0 };
@@ -96,9 +121,21 @@ export class Orchestrator {
     padAtTime: PAD;
     startedAt: number;
   } | null = null;
+  /** Rolling window of song ids we've just picked (oldest→newest). Used by
+   *  auto-advance to exclude recently played tracks so the recommender can't
+   *  loop on the same song when the emotion + pseudoTarget stay constant.
+   *  Session-scoped: not persisted across app restarts. */
+  private recentSongIds: string[] = [];
+  private static readonly RECENT_EXCLUDE_WINDOW = 5;
 
   constructor(deps: OrchestratorDeps) {
     this.deps = deps;
+    // Phase 2/3a: wire agentRunSink into pi-capable agents so their pi paths
+    // can record telemetry without requiring callers to reconstruct them.
+    if (deps.agentRunSink) {
+      deps.emotion.setAgentRunSink(deps.agentRunSink);
+      deps.companion.setAgentRunSink?.(deps.agentRunSink);
+    }
   }
 
   /**
@@ -134,6 +171,17 @@ export class Orchestrator {
   private emit(s: OrchestratorState): void {
     this.state = s;
     for (const cb of this.subs) cb(s);
+  }
+
+  /** Push a picked song id onto the rolling exclude window. Move-to-front:
+   *  a repeated id gets refreshed to the tail rather than duplicated. */
+  private trackSongPicked(songId: string): void {
+    const idx = this.recentSongIds.indexOf(songId);
+    if (idx !== -1) this.recentSongIds.splice(idx, 1);
+    this.recentSongIds.push(songId);
+    if (this.recentSongIds.length > Orchestrator.RECENT_EXCLUDE_WINDOW) {
+      this.recentSongIds.shift();
+    }
   }
 
   /** Finalise the previous turn: fold events, optionally apply verbal, update soul, persist. */
@@ -267,6 +315,9 @@ export class Orchestrator {
       currentEmotion: emotion,
       soul,
       candidates,
+      handoff: modality === "proactive-open" ? "auto-advance" : "user-spoke",
+      // Phase 3a: pass currently-playing song so verbal_intent ("换一个"/"再来一遍") works.
+      ...(this.currentSong != null ? { lastSong: this.currentSong } : {}),
       ...ctx,
     });
     const song = candidates.find((c) => c.id === chosen.song_id)!;
@@ -314,6 +365,7 @@ export class Orchestrator {
     this.currentTurn = turn;
     this.currentSong = song;
     this.pendingEvents = [];
+    this.trackSongPicked(song.id);
     this.emit({ kind: "playing", turn, song });
   }
 
@@ -376,6 +428,7 @@ export class Orchestrator {
         currentEmotion: emotion,
         soul,
         candidates,
+        handoff: "cold-open",
         ...ctx,
       });
       const song = candidates.find((c) => c.id === chosen.song_id);
@@ -436,6 +489,7 @@ export class Orchestrator {
         this.currentTurn = pendingTurn;
         this.currentSong = song;
         this.pendingEvents = [];
+        this.trackSongPicked(song.id);
       } catch (err) {
         console.warn("[lyra] failed to commit proactive-pending turn:", err);
       }
@@ -629,7 +683,16 @@ export class Orchestrator {
         "proactive-open",
         // For pseudo-target we lean on the baseline emotion's labels + a hint
         `${baseEmotion.labels.join(" ")} 延续`.trim(),
-        endedSongId ? new Set([endedSongId]) : undefined,
+        // Exclude the rolling window (last N picked songs) — a single-song
+        // exclusion isn't enough when the recommender oscillates A→B→A→B or
+        // when only a few candidates match the constant emotion/pseudoTarget.
+        // If this empties the candidate pool, runTurnWithEmotion falls back
+        // to the unrestricted prefilter (existing safety net).
+        this.recentSongIds.length > 0
+          ? new Set(this.recentSongIds)
+          : endedSongId
+            ? new Set([endedSongId])
+            : undefined,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -46,6 +46,15 @@ Lyra is a desktop music agent built with **Tauri 2** + **React 19** + **TypeScri
 - **Rust 1.70+** (for Tauri backend compilation)
 - **Xcode Command Line Tools** (macOS) or equivalent build tools
 
+## 本地无 API key 使用（Ollama）
+
+如果你安装了 [Ollama](https://ollama.com)，不需要任何云服务 API key 也能使用 Lyra。
+
+1. 安装并启动 Ollama，拉取一个模型（例如 `ollama pull qwen2.5`）。
+2. 打开 Lyra → Settings，勾选 **Ollama（本地，无需 API key）**。
+3. Endpoint 默认 `http://localhost:11434`，Model 默认 `qwen2.5:latest`，按需修改后点 Save 即生效。
+4. 关闭 Ollama 时 Lyra 会捕获网络错误并给出明确提示，不会崩溃。
+
 ### Installation
 
 1. Clone and navigate to the app directory:
