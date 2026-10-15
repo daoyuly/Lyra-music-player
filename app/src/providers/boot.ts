@@ -6,6 +6,7 @@ import { ZhipuProvider } from "./zhipu";
 import { OllamaProvider, DEFAULT_OLLAMA_ENDPOINT, DEFAULT_OLLAMA_MODEL } from "./ollama";
 import { registry } from "./registry";
 import { withUsageLogging } from "./usageLogging";
+import { lyraLog } from "../lib/lyraLog";
 
 export type SkipReason = "no-key" | "keychain-error";
 
@@ -89,5 +90,18 @@ export async function bootProviders(): Promise<BootReport> {
   // Sort for stable output regardless of Promise resolution order.
   registered.sort();
   skipped.sort((a, b) => a.id.localeCompare(b.id));
+
+  lyraLog("boot", "info", "providers ready", {
+    registered: registered.length ? registered.join(",") : "(none)",
+    skipped: skipped.length
+      ? skipped.map((s) => `${s.id}:${s.reason}`).join(",")
+      : "(none)",
+  });
+  lyraLog(
+    "boot",
+    "info",
+    "tip: WebView console stays in DevTools; greppable lines use [lyra:] in this terminal",
+  );
+
   return { registered, skipped };
 }

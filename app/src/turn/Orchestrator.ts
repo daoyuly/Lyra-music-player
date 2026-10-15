@@ -21,6 +21,14 @@ import type { AgentRunSink } from "./agentRunSink";
 import { parseIntent } from "../agents/intentParser";
 import type { ActiveIntent } from "../db/repo/activeIntentRepo";
 import * as productEventsRepo from "../db/repo/productEventsRepo";
+import {
+  classifyError,
+  formatErrorDetail,
+  logLyraError,
+  userFacingErrorMessage,
+} from "../lib/formatError";
+import { lyraLog } from "../lib/lyraLog";
+import { writeTrace } from "../reasoning/writeTrace";
 
 export type SoulStoreLike = {
   load(): Promise<SoulState>;
@@ -650,21 +658,68 @@ export class Orchestrator {
       /* bus errors are non-fatal */
     }
 
+    const clock = this.deps.clock ?? Date.now;
+    const idGen = this.deps.idGen ?? (() => crypto.randomUUID());
+    const diagId = idGen().slice(0, 8);
+    const t0 = performance.now();
+    let phase: "intent" | "emotion" | "finalize" | "companion" = "intent";
+
+    lyraLog("turn", "info", "start", {
+      diagId,
+      utteranceLen: text.length,
+    });
+
     try {
       // Sticky intent must be applied BEFORE emotion/prefilter so the same
       // turn's candidate pool already reflects "一直播放粤语歌曲".
-      const clock = this.deps.clock ?? Date.now;
-      const idGen = this.deps.idGen ?? (() => crypto.randomUUID());
+      lyraLog("turn", "info", "phase", { diagId, phase: "intent" });
       await this.applyParsedIntent(text, idGen(), clock());
 
+      phase = "emotion";
+      lyraLog("turn", "info", "phase", { diagId, phase: "emotion" });
       const emotion = await emotionAgent.analyze({ userUtterance: text });
       const blended = blendEmotionWithBias(emotion, this.perceptionBias);
+
+      phase = "finalize";
+      lyraLog("turn", "info", "phase", { diagId, phase: "finalize" });
       await this.finalisePreviousTurn(text, blended.pad);
+
+      phase = "companion";
+      lyraLog("turn", "info", "phase", { diagId, phase: "companion" });
       await this.runTurnWithEmotion(blended, text, "text");
+
+      lyraLog("turn", "info", "ok", {
+        diagId,
+        ms: Math.round(performance.now() - t0),
+      });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[lyra] orchestrator error:", err);
-      this.emit({ kind: "error", message: msg });
+      const code = classifyError(err);
+      const detail = formatErrorDetail(err);
+      const ms = Math.round(performance.now() - t0);
+      logLyraError("orchestrator error", err, {
+        diagId,
+        phase,
+        code,
+        utteranceLen: text.length,
+        ms,
+      });
+      lyraLog("turn", "error", "failed", { diagId, phase, code, ms });
+      // Persist so DataExplorer can show failures that never produced a response.
+      writeTrace({
+        agent_kind: phase === "companion" ? "companion" : "emotion",
+        prompt_text: text,
+        raw_response: "",
+        parsed_json: {
+          __turn_error__: true,
+          code,
+          phase,
+          diagId,
+          message: detail.message,
+          name: detail.name,
+        },
+        duration_ms: ms,
+      });
+      this.emit({ kind: "error", message: userFacingErrorMessage(err) });
     }
   }
 
@@ -847,9 +902,26 @@ export class Orchestrator {
             : undefined,
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[lyra] auto-advance error:", err);
-      this.emit({ kind: "error", message: msg });
+      const code = classifyError(err);
+      const detail = formatErrorDetail(err);
+      logLyraError("auto-advance error", err, {
+        phase: "onSongComplete",
+        code,
+      });
+      lyraLog("turn", "error", "auto-advance failed", { code });
+      writeTrace({
+        agent_kind: "companion",
+        prompt_text: "(auto-advance)",
+        raw_response: "",
+        parsed_json: {
+          __turn_error__: true,
+          code,
+          phase: "onSongComplete",
+          message: detail.message,
+          name: detail.name,
+        },
+      });
+      this.emit({ kind: "error", message: userFacingErrorMessage(err) });
     }
   }
 }

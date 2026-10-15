@@ -5,6 +5,8 @@ import type {
   ChatResponse,
 } from "../types";
 import type { Chunk, ChatStreamOptions } from "./chunk";
+import { providerFetchErrorMessage } from "../lib/formatError";
+import { lyraHttp, iterSseDataLines } from "../lib/lyraHttp";
 
 const DEFAULT_MODEL = "deepseek-chat";
 // Hard-coded to match the CSP connect-src allowlist in tauri.conf.json.
@@ -31,21 +33,26 @@ export class DeepSeekProvider implements ModelProvider {
     if (opts?.temperature != null) body.temperature = opts.temperature;
     if (opts?.response_format) body.response_format = opts.response_format;
 
-    const res = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`DeepSeek ${res.status}: ${text}`);
+    let result: { status: number; body: string };
+    try {
+      result = await lyraHttp(ENDPOINT, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+        label: "deepseek",
+      });
+    } catch (err) {
+      throw new Error(providerFetchErrorMessage("DeepSeek", ENDPOINT, err));
     }
 
-    const data = await res.json();
+    if (result.status < 200 || result.status >= 300) {
+      throw new Error(`DeepSeek ${result.status}: ${result.body}`);
+    }
+
+    const data = JSON.parse(result.body);
     const content: string = data.choices?.[0]?.message?.content ?? "";
     const usage = data.usage
       ? {
@@ -71,9 +78,9 @@ export class DeepSeekProvider implements ModelProvider {
     if (opts.temperature != null) body.temperature = opts.temperature;
     if (opts.tools != null) body.tools = opts.tools;
 
-    let res: Response;
+    let result: { status: number; body: string };
     try {
-      res = await fetch(ENDPOINT, {
+      result = await lyraHttp(ENDPOINT, {
         method: "POST",
         headers: {
           authorization: `Bearer ${this.apiKey}`,
@@ -81,111 +88,84 @@ export class DeepSeekProvider implements ModelProvider {
         },
         body: JSON.stringify(body),
         signal,
+        label: "deepseek",
       });
     } catch (err) {
       if (signal?.aborted) {
         yield { type: "stop", reason: "aborted" };
         return;
       }
-      yield { type: "error", message: String(err) };
+      yield {
+        type: "error",
+        message: providerFetchErrorMessage("DeepSeek", ENDPOINT, err),
+      };
       yield { type: "stop", reason: "error" };
       return;
     }
 
-    if (!res.ok) {
-      const text = await res.text();
-      yield { type: "error", message: `DeepSeek ${res.status}: ${text}` };
+    if (result.status < 200 || result.status >= 300) {
+      yield { type: "error", message: `DeepSeek ${result.status}: ${result.body}` };
       yield { type: "stop", reason: "error" };
       return;
     }
 
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
     // Accumulate tool_call args per OpenAI-compat index
     const argsAccum: Record<number, string> = {};
 
-    outer: while (true) {
+    for (const raw of iterSseDataLines(result.body)) {
       if (signal?.aborted) {
-        reader.cancel();
         yield { type: "stop", reason: "aborted" };
         return;
       }
+      if (raw === "[DONE]") break;
 
-      let done: boolean;
-      let value: Uint8Array | undefined;
+      let event: Record<string, unknown>;
       try {
-        ({ done, value } = await reader.read());
+        event = JSON.parse(raw) as Record<string, unknown>;
       } catch {
-        if (signal?.aborted) {
-          yield { type: "stop", reason: "aborted" };
-          return;
-        }
-        yield { type: "error", message: "Stream read error" };
-        yield { type: "stop", reason: "error" };
-        return;
+        continue;
       }
 
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      const choices = event.choices as Array<Record<string, unknown>> | undefined;
+      if (!choices?.length) continue;
 
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+      const choice = choices[0];
+      const delta = choice.delta as Record<string, unknown> | undefined;
+      const finishReason = choice.finish_reason as string | null | undefined;
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const raw = trimmed.slice(5).trim();
-        if (raw === "[DONE]") break outer;
+      // Text delta
+      if (delta?.content != null && delta.content !== "") {
+        yield { type: "text", delta: String(delta.content) };
+      }
 
-        let event: Record<string, unknown>;
-        try {
-          event = JSON.parse(raw) as Record<string, unknown>;
-        } catch {
-          continue;
+      // Tool call deltas (OpenAI-compat: array of {index, id?, function: {name?, arguments?}})
+      const toolCalls = delta?.tool_calls as Array<Record<string, unknown>> | undefined;
+      if (toolCalls) {
+        for (const tc of toolCalls) {
+          const idx = (tc.index as number) ?? 0;
+          argsAccum[idx] = argsAccum[idx] ?? "";
+          const fn = tc.function as Record<string, unknown> | undefined;
+          const id = tc.id != null ? String(tc.id) : String(idx);
+          const name = fn?.name != null ? String(fn.name) : undefined;
+          const argsDelta = fn?.arguments != null ? String(fn.arguments) : "";
+          argsAccum[idx] += argsDelta;
+          yield {
+            type: "tool_call",
+            id,
+            ...(name != null ? { name } : {}),
+            argsDelta,
+            argsAccum: argsAccum[idx],
+          };
         }
+      }
 
-        const choices = event.choices as Array<Record<string, unknown>> | undefined;
-        if (!choices?.length) continue;
-
-        const choice = choices[0];
-        const delta = choice.delta as Record<string, unknown> | undefined;
-        const finishReason = choice.finish_reason as string | null | undefined;
-
-        // Text delta
-        if (delta?.content != null && delta.content !== "") {
-          yield { type: "text", delta: String(delta.content) };
-        }
-
-        // Tool call deltas (OpenAI-compat: array of {index, id?, function: {name?, arguments?}})
-        const toolCalls = delta?.tool_calls as Array<Record<string, unknown>> | undefined;
-        if (toolCalls) {
-          for (const tc of toolCalls) {
-            const idx = (tc.index as number) ?? 0;
-            argsAccum[idx] = argsAccum[idx] ?? "";
-            const fn = tc.function as Record<string, unknown> | undefined;
-            const id = tc.id != null ? String(tc.id) : String(idx);
-            const name = fn?.name != null ? String(fn.name) : undefined;
-            const argsDelta = fn?.arguments != null ? String(fn.arguments) : "";
-            argsAccum[idx] += argsDelta;
-            yield {
-              type: "tool_call",
-              id,
-              ...(name != null ? { name } : {}),
-              argsDelta,
-              argsAccum: argsAccum[idx],
-            };
-          }
-        }
-
-        if (finishReason === "tool_calls") {
-          yield { type: "stop", reason: "tool_use" };
-          return;
-        }
-        if (finishReason === "stop") {
-          yield { type: "stop", reason: "end" };
-          return;
-        }
+      if (finishReason === "tool_calls") {
+        yield { type: "stop", reason: "tool_use" };
+        return;
+      }
+      if (finishReason === "stop") {
+        yield { type: "stop", reason: "end" };
+        return;
       }
     }
 

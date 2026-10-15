@@ -5,6 +5,8 @@ import type {
   ChatResponse,
 } from "../types";
 import type { Chunk, ChatStreamOptions } from "./chunk";
+import { providerFetchErrorMessage } from "../lib/formatError";
+import { lyraHttp, iterSseDataLines } from "../lib/lyraHttp";
 
 const DEFAULT_MODEL = "claude-opus-4-7";
 const DEFAULT_MAX_TOKENS = 1024;
@@ -37,22 +39,27 @@ export class AnthropicProvider implements ModelProvider {
     if (systemParts.length > 0) body.system = systemParts.join("\n\n");
     if (opts?.temperature != null) body.temperature = opts.temperature;
 
-    const res = await fetch(ENDPOINT, {
-      method: "POST",
-      headers: {
-        "x-api-key": this.apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Anthropic ${res.status}: ${text}`);
+    let result: { status: number; body: string };
+    try {
+      result = await lyraHttp(ENDPOINT, {
+        method: "POST",
+        headers: {
+          "x-api-key": this.apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+        label: "anthropic",
+      });
+    } catch (err) {
+      throw new Error(providerFetchErrorMessage("Anthropic", ENDPOINT, err));
     }
 
-    const data = await res.json();
+    if (result.status < 200 || result.status >= 300) {
+      throw new Error(`Anthropic ${result.status}: ${result.body}`);
+    }
+
+    const data = JSON.parse(result.body);
     const content = (data.content ?? [])
       .filter((b: { type: string }) => b.type === "text")
       .map((b: { text: string }) => b.text)
@@ -86,9 +93,9 @@ export class AnthropicProvider implements ModelProvider {
     if (opts.temperature != null) body.temperature = opts.temperature;
     if (opts.tools != null) body.tools = toAnthropicTools(opts.tools);
 
-    let res: Response;
+    let result: { status: number; body: string };
     try {
-      res = await fetch(ENDPOINT, {
+      result = await lyraHttp(ENDPOINT, {
         method: "POST",
         headers: {
           "x-api-key": this.apiKey,
@@ -97,131 +104,103 @@ export class AnthropicProvider implements ModelProvider {
         },
         body: JSON.stringify(body),
         signal,
+        label: "anthropic",
       });
     } catch (err) {
       if (signal?.aborted) {
         yield { type: "stop", reason: "aborted" };
         return;
       }
-      yield { type: "error", message: String(err) };
+      yield {
+        type: "error",
+        message: providerFetchErrorMessage("Anthropic", ENDPOINT, err),
+      };
       yield { type: "stop", reason: "error" };
       return;
     }
 
-    if (!res.ok) {
-      const text = await res.text();
-      yield { type: "error", message: `Anthropic ${res.status}: ${text}` };
+    if (result.status < 200 || result.status >= 300) {
+      yield { type: "error", message: `Anthropic ${result.status}: ${result.body}` };
       yield { type: "stop", reason: "error" };
       return;
     }
 
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
     // Track accumulated args per tool_call index so we can provide argsAccum
     const argsAccum: Record<string, string> = {};
 
-    outer: while (true) {
+    for (const raw of iterSseDataLines(result.body)) {
       if (signal?.aborted) {
-        reader.cancel();
         yield { type: "stop", reason: "aborted" };
         return;
       }
+      if (raw === "[DONE]") break;
 
-      let done: boolean;
-      let value: Uint8Array | undefined;
+      let event: Record<string, unknown>;
       try {
-        ({ done, value } = await reader.read());
+        event = JSON.parse(raw) as Record<string, unknown>;
       } catch {
-        if (signal?.aborted) {
-          yield { type: "stop", reason: "aborted" };
-          return;
-        }
-        yield { type: "error", message: "Stream read error" };
+        continue;
+      }
+
+      const evType = event.type as string | undefined;
+
+      if (evType === "error") {
+        const errObj = event.error as Record<string, unknown> | undefined;
+        yield { type: "error", message: String(errObj?.message ?? raw) };
         yield { type: "stop", reason: "error" };
         return;
       }
 
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      if (evType === "content_block_delta") {
+        const delta = event.delta as Record<string, unknown> | undefined;
+        const deltaType = delta?.type as string | undefined;
+        const index = event.index as number | undefined;
+        const idxKey = String(index ?? 0);
 
-      // Process complete SSE lines
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const raw = trimmed.slice(5).trim();
-        if (raw === "[DONE]") break outer;
-
-        let event: Record<string, unknown>;
-        try {
-          event = JSON.parse(raw) as Record<string, unknown>;
-        } catch {
-          continue;
+        if (deltaType === "text_delta") {
+          yield { type: "text", delta: String(delta?.text ?? "") };
+        } else if (deltaType === "input_json_delta") {
+          const argsDelta = String(delta?.partial_json ?? "");
+          argsAccum[idxKey] = (argsAccum[idxKey] ?? "") + argsDelta;
+          // id and name come from the content_block_start event; we
+          // re-use idxKey as the id placeholder until we have the real one.
+          yield {
+            type: "tool_call",
+            id: idxKey,
+            argsDelta,
+            argsAccum: argsAccum[idxKey],
+          };
         }
+      }
 
-        const evType = event.type as string | undefined;
-
-        if (evType === "error") {
-          const errObj = event.error as Record<string, unknown> | undefined;
-          yield { type: "error", message: String(errObj?.message ?? raw) };
-          yield { type: "stop", reason: "error" };
-          return;
-        }
-
-        if (evType === "content_block_delta") {
-          const delta = event.delta as Record<string, unknown> | undefined;
-          const deltaType = delta?.type as string | undefined;
+      if (evType === "content_block_start") {
+        const block = event.content_block as Record<string, unknown> | undefined;
+        if (block?.type === "tool_use") {
+          const id = String(block.id ?? "");
+          const name = String(block.name ?? "");
           const index = event.index as number | undefined;
           const idxKey = String(index ?? 0);
-
-          if (deltaType === "text_delta") {
-            yield { type: "text", delta: String(delta?.text ?? "") };
-          } else if (deltaType === "input_json_delta") {
-            const argsDelta = String(delta?.partial_json ?? "");
-            argsAccum[idxKey] = (argsAccum[idxKey] ?? "") + argsDelta;
-            // id and name come from the content_block_start event; we
-            // re-use idxKey as the id placeholder until we have the real one.
-            yield {
-              type: "tool_call",
-              id: idxKey,
-              argsDelta,
-              argsAccum: argsAccum[idxKey],
-            };
-          }
+          argsAccum[idxKey] = "";
+          yield { type: "tool_call", id, name, argsDelta: "", argsAccum: "" };
         }
+      }
 
-        if (evType === "content_block_start") {
-          const block = event.content_block as Record<string, unknown> | undefined;
-          if (block?.type === "tool_use") {
-            const id = String(block.id ?? "");
-            const name = String(block.name ?? "");
-            const index = event.index as number | undefined;
-            const idxKey = String(index ?? 0);
-            argsAccum[idxKey] = "";
-            yield { type: "tool_call", id, name, argsDelta: "", argsAccum: "" };
-          }
+      if (evType === "message_delta") {
+        const delta = event.delta as Record<string, unknown> | undefined;
+        const stopReason = delta?.stop_reason as string | undefined;
+        if (stopReason === "tool_use") {
+          yield { type: "stop", reason: "tool_use" };
+          return;
         }
-
-        if (evType === "message_delta") {
-          const delta = event.delta as Record<string, unknown> | undefined;
-          const stopReason = delta?.stop_reason as string | undefined;
-          if (stopReason === "tool_use") {
-            yield { type: "stop", reason: "tool_use" };
-            return;
-          }
-          if (stopReason === "end_turn") {
-            yield { type: "stop", reason: "end" };
-            return;
-          }
-        }
-
-        if (evType === "message_stop") {
+        if (stopReason === "end_turn") {
           yield { type: "stop", reason: "end" };
           return;
         }
+      }
+
+      if (evType === "message_stop") {
+        yield { type: "stop", reason: "end" };
+        return;
       }
     }
 

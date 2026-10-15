@@ -146,6 +146,71 @@ async fn check_panic_file(app: tauri::AppHandle) -> Result<bool, String> {
     Ok(panic_path.exists())
 }
 
+/// Bridge frontend diagnostics into the `tauri dev` terminal.
+/// WebView `console.*` stays in DevTools; this prints to Rust stderr so
+/// turn/provider failures are greppable from the shell that launched Lyra.
+#[tauri::command]
+fn frontend_log(level: String, scope: String, message: String) -> Result<(), String> {
+    match level.as_str() {
+        "warn" => eprintln!("[lyra:{scope}] {message}"),
+        "info" => eprintln!("[lyra:{scope}] {message}"),
+        _ => eprintln!("[lyra:{scope}] {message}"),
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct HttpFetchResponse {
+    status: u16,
+    body: String,
+}
+
+/// Outbound HTTP from Rust — bypasses WKWebView `fetch` / CSP / CORS quirks
+/// that surface as the opaque TypeError "Load failed" in the UI.
+#[tauri::command]
+async fn http_fetch(
+    method: String,
+    url: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Option<String>,
+) -> Result<HttpFetchResponse, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("http_fetch client: {e}"))?;
+
+    let mut req = match method.to_uppercase().as_str() {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        "PUT" => client.put(&url),
+        "DELETE" => client.delete(&url),
+        "PATCH" => client.patch(&url),
+        other => return Err(format!("http_fetch unsupported method: {other}")),
+    };
+
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+    if let Some(b) = body {
+        req = req.body(b);
+    }
+
+    let res = req.send().await.map_err(|e| {
+        eprintln!("[lyra:http_fetch] request error url={url}: {e}");
+        format!("http_fetch network error: {e}")
+    })?;
+
+    let status = res.status().as_u16();
+    let body = res.text().await.map_err(|e| format!("http_fetch body: {e}"))?;
+    if status >= 400 {
+        eprintln!(
+            "[lyra:http_fetch] HTTP {status} url={url} body={}",
+            body.chars().take(300).collect::<String>()
+        );
+    }
+    Ok(HttpFetchResponse { status, body })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -271,6 +336,8 @@ pub fn run() {
             memory_file_read,
             memory_file_write,
             check_panic_file,
+            frontend_log,
+            http_fetch,
             tray::tray_set_breathing,
             audio_features::audio_extract_features,
             lyrics::lyrics_extract,

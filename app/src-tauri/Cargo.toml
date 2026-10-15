@@ -32,6 +32,7 @@ keyring = { version = "3", features = ["apple-native"] }
 walkdir = "2"
 lofty = "0.22"
 tokio = { version = "1", features = ["fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rustfft = "6"
 # 全局键盘监听 —— 用于动态音量的活动信号源。macOS 首次调用 listen 时会请求
 # 辅助功能权限；未获权限时 listen 返回 Err，我们做静默降级。
