@@ -48,6 +48,18 @@ export async function isPaused(): Promise<boolean> {
   return await invoke<boolean>("audio_is_paused");
 }
 
+/** 正在放的歌的三个频段,各在 0..1。没在放时全是 0。 */
+export type PlaybackSpectrum = {
+  low: number;
+  mid: number;
+  high: number;
+  pulse: number;
+};
+
+export async function readSpectrum(): Promise<PlaybackSpectrum> {
+  return await invoke<PlaybackSpectrum>("audio_spectrum");
+}
+
 /**
  * Subscribe to natural song-completion events from the Rust audio thread.
  * The callback receives the playback id that finished. Returns an

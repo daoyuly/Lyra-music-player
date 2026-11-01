@@ -1,17 +1,12 @@
-// 照片 → 动效配方
-// 每张背景照片声明一组"这张画面里已经存在的元素该怎么活起来":
-//   ripples    — 局部涟漪扩散圈 (船位 / 水面焦点)
-//   waterfalls — 竖向白丝流线 (照片里的瀑布)
-//   sunBreathe — 径向呼吸光晕 (红日 / 月)
-//   birds      — 一队缓飞的小 V (照片里的鸟阵)
-//   mist       — 缓慢起伏的横向淡雾带
-//   waterShimmer — 水面横向波光,多条随时间扫动
-// 坐标一律用 [0..1] 归一化,渲染时乘以 canvas 宽高。
+// 背景画 → 裁切与动效
+// 每张画只声明画面里已经有的东西：水波、风、日晕、船边涟漪。
+// 坐标是视口的 [0..1]，不是原图像素。position 决定 cover 时留下哪一段。
 
-import bg1 from "../assets/bg/1.jpg";
-import bg2 from "../assets/bg/2.png";
-import bg3 from "../assets/bg/3.jpg";
-import bg4 from "../assets/bg/4.jpg";
+import angler from "../assets/bg/Angler_on_a_Wintry_Lake,_by_Ma_Yuan,_1195.jpg";
+import autumnFlood from "../assets/bg/Ma_Yuan_-_Water_Album_-_The_Waving_Surface_of_the_Autumn_Flood.jpg";
+import sixGentlemen from "../assets/bg/Ni_Zan_-_Six_Gentlemen.jpg";
+import pineTrees from "../assets/bg/pine-trees.jpg";
+import norham from "../assets/bg/Joseph_Mallord_William_Turner_-_Norham_Castle,_Sunrise_-_WGA23182.jpg";
 
 export type BgRipple = {
   xFrac: number;
@@ -41,7 +36,8 @@ export type BgBirds = {
   speed: number;
 };
 
-export type BgMist = {
+/** 风经过的一带。画的是墨线在摆，不是白雾。 */
+export type BgWind = {
   topFrac: number;
   bottomFrac: number;
 };
@@ -56,56 +52,82 @@ export type BgAnimationConfig = {
   waterfalls?: BgWaterfall[];
   sunBreathe?: BgSunBreathe;
   birds?: BgBirds;
-  mist?: BgMist;
+  wind?: BgWind;
   waterShimmer?: BgWaterShimmer;
 };
 
 export type BgEntry = {
   url: string;
+  /** CSS background-position. Keeps the quiet band inside a landscape window. */
+  position: string;
+  /**
+   * How hard the bottom darkens, 0–1.
+   * Aged silk is already dark; pale paper only needs a light edge.
+   */
+  vignette: number;
   config: BgAnimationConfig;
+  /**
+   * Where the sentence and the input sit.
+   * Top, sides, bottom. A larger bottom padding lifts both off the lower water.
+   */
+  contentPadding?: string;
 };
 
 export const BG_ENTRIES: BgEntry[] = [
-  // 1.jpg — 水墨江上舟 (船在左下 ~32%,87%)
+  // 马远《寒江独钓图》横幅。船在中下偏左，左右是空绢。
   {
-    url: bg1,
+    url: angler,
+    position: "center center",
+    vignette: 0.22,
+    // 船在中段。字和输入框留在上空，水波只走船底下的水面。
+    contentPadding: "3vh 56px 24vh",
     config: {
-      ripples: [{ xFrac: 0.32, yFrac: 0.87, radiusPx: 55, periodS: 6 }],
-      waterShimmer: { topFrac: 0.62, bottomFrac: 1.0 },
+      ripples: [{ xFrac: 0.42, yFrac: 0.95, radiusPx: 22, periodS: 7.5 }],
+      waterShimmer: { topFrac: 0.9, bottomFrac: 1 },
     },
   },
-  // 2.png — 彩色湖 + 船 + 右侧瀑布
+  // 马远《水图·秋水回波》。几乎整幅都是水纹，题字在左上。
   {
-    url: bg2,
+    url: autumnFlood,
+    position: "center center",
+    vignette: 0.4,
     config: {
-      ripples: [{ xFrac: 0.60, yFrac: 0.78, radiusPx: 42, periodS: 5.5 }],
-      waterfalls: [{ xFrac: 0.85, yFrac: 0.30, heightPx: 90 }],
-      waterShimmer: { topFrac: 0.60, bottomFrac: 1.0 },
+      waterShimmer: { topFrac: 0.42, bottomFrac: 0.92 },
     },
   },
-  // 3.jpg — 水墨江上舟 (船在左下 ~18%,85%)
+  // 倪瓒《六君子图》立轴。空白在中段，树在下、山在上。
+  // 横窗只露出约三分之一高度，把视点放在空白湖面，树梢还留在下沿。
   {
-    url: bg3,
+    url: sixGentlemen,
+    position: "center 28%",
+    vignette: 0.35,
     config: {
-      ripples: [{ xFrac: 0.18, yFrac: 0.86, radiusPx: 45, periodS: 6.5 }],
-      waterShimmer: { topFrac: 0.72, bottomFrac: 1.0 },
+      wind: { topFrac: 0.12, bottomFrac: 0.5 },
     },
   },
-  // 4.jpg — 楼阁密林 + 双瀑布（沿用旧 4.jpeg 的动效配方；若已换图请重配）
+  // 长谷川等伯《松林图》左扇。pine-trees.jpg 是 3600px 宽的屏幕用图，
+  // 原件约 47MB，不放进窗口解码。
   {
-    url: bg4,
+    url: pineTrees,
+    position: "center center",
+    vignette: 0.3,
     config: {
-      waterfalls: [
-        { xFrac: 0.10, yFrac: 0.36, heightPx: 100 },
-        { xFrac: 0.88, yFrac: 0.42, heightPx: 80 },
-      ],
-      mist: { topFrac: 0.35, bottomFrac: 0.55 },
+      wind: { topFrac: 0.18, bottomFrac: 0.72 },
+    },
+  },
+  // 透纳《诺勒姆城堡，日出》。光在中上，水在下半。
+  {
+    url: norham,
+    position: "center center",
+    vignette: 0.35,
+    config: {
+      sunBreathe: { xFrac: 0.52, yFrac: 0.33, radiusPx: 220, color: "255, 214, 140" },
+      waterShimmer: { topFrac: 0.62, bottomFrac: 0.94 },
     },
   },
 ];
 
-// 模块级随机选中 — 一个 App 会话固定一张。冷启动重新求值 → 每次开 App 换图。
-// Dev 覆盖:URL 上带 ?bg=1..N 时锁定到指定序号(用于逐张验证背景)。
+// 一个进程固定一张。重新打开应用才换。?bg=1..N 可锁定某一张。
 function pickSessionBg(): BgEntry | null {
   if (BG_ENTRIES.length === 0) return null;
   const search = typeof window !== "undefined" ? window.location.search : "";
@@ -118,3 +140,11 @@ function pickSessionBg(): BgEntry | null {
 }
 
 export const SESSION_BG: BgEntry | null = pickSessionBg();
+
+/** Bottom-weighted scrim. `strength` 1 matches the old photo vignette. */
+export function vignetteGradient(strength: number): string {
+  const top = (0.1 * strength).toFixed(3);
+  const mid = (0.04 * strength).toFixed(3);
+  const bottom = (0.5 * strength).toFixed(3);
+  return `linear-gradient(to bottom, rgba(0,0,0,${top}) 0%, rgba(0,0,0,${mid}) 42%, rgba(0,0,0,${bottom}) 100%)`;
+}

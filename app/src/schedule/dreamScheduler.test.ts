@@ -639,3 +639,35 @@ describe("DreamScheduler boot-time catch-up", () => {
     s.stop();
   });
 });
+
+describe("DreamScheduler – onMinute", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("fires onMinute before the daily task", async () => {
+    const order: string[] = [];
+    const runReflect = vi.fn(async () => {
+      order.push("reflect");
+    });
+    const onMinute = vi.fn(() => {
+      order.push("minute");
+    });
+    const now = localDate(3, 14);
+    const { listen } = makeActivityListener();
+
+    const sched = new DreamScheduler({
+      dailyTimeHHMM: "03:14",
+      idleMinutes: 0,
+      runReflect,
+      onMinute,
+      clock: () => now,
+      onActivityListen: listen,
+    });
+
+    sched.start();
+    await tick();
+
+    expect(order).toEqual(["minute", "reflect"]);
+    sched.stop();
+  });
+});

@@ -51,6 +51,7 @@ export function HelpOverlay({ open, onClose }: HelpOverlayProps) {
             <li><code>/stats</code> — LLM 调用与消耗</li>
             <li><code>/explorer</code> — 数据浏览器（播放记录、Agent runtime、轮次、记忆、灵魂、显著性、LLM 用量…）</li>
             <li><code>/week</code> — 打开我给你写的这一周的信（最近 7 天） · 若数据不足或我这周没写好，会展示一封短的道歉</li>
+            <li><code>/show 题目</code> — 我和一位嘉宾按这个题目做一期。台词由智谱念出来，念完再放歌，回车可以马上放。每一拍会按这首歌的资料，轮着带上欢快、幽默或悲伤。这一段播完我会接着编。<code>/show 嘉宾名 / 题目</code> 给嘉宾起名。中途再说一句，我改后面。<code>/show off</code> 结束这期</li>
             <li><code>/reload-musics</code> — 清掉旧曲库记录，从设置里的曲库路径重新扫描 · 用在你重命名/搬动了歌曲之后</li>
           </ul>
           <p style={hint}>

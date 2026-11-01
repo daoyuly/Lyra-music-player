@@ -23,6 +23,9 @@ export type DreamSchedulerConfig = {
   /** Sprint weekly: fires on Sunday. Independent error boundary — a
    *  runWeekly throw does not affect reflect state. */
   runWeekly?: () => Promise<void>;
+  /** Once a minute, before the fixed-time checks. Used to release anything
+   *  the air desk held through the night. */
+  onMinute?: (now: Date) => void;
   /** "HH:MM" — weekly letter generation time on Sundays. Defaults to
    *  dailyTimeHHMM when absent (backwards compatible). Recommended
    *  default is a waking hour (09:00) so users can read it fresh. */
@@ -188,6 +191,11 @@ export class DreamScheduler {
 
   private async _tick(): Promise<void> {
     const now = this._now();
+    try {
+      this._config.onMinute?.(now);
+    } catch (err) {
+      console.warn("[DreamScheduler] onMinute threw:", err);
+    }
     await this._checkDaily(now);
     await this._checkWeekly(now);
     await this._checkIdle(now);

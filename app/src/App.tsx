@@ -13,6 +13,11 @@ import { setMemoryContext } from "./memory/context";
 import { onSongComplete } from "./audio/player";
 import { DreamScheduler } from "./schedule/dreamScheduler";
 import { autoWeeklyTrigger, onDemandWeeklyOpen } from "./weekly/wire";
+import { createSystemMouth } from "./air/mouth";
+import { createBroadcaster } from "./air/broadcast";
+import { AirDesk } from "./air/desk";
+import { reflectSpoken, taskBulletin, weeklySpoken } from "./air/bulletin";
+import { createShowVoice, type ShowVoice } from "./show/voices";
 import { SECRET_KEYS, getSecret, setSecret } from "./settings/secrets";
 import { ProactiveEngine } from "./proactive/engine";
 import { createSulkStore } from "./proactive/sulkStore";
@@ -32,6 +37,56 @@ import { RoadmapBoard } from "./ui/RoadmapBoard";
 import { DataExplorer } from "./ui/DataExplorer";
 import { HelpOverlay } from "./home/HelpOverlay";
 import { WeeklyReader } from "./home/WeeklyReader";
+
+type AirBundle = { desk: AirDesk; showVoice: ShowVoice };
+
+/** One microphone for the show and for bulletins. */
+function createAir(): AirBundle {
+  const mouth = createSystemMouth();
+  const broadcaster = createBroadcaster(mouth);
+  return {
+    desk: new AirDesk((bulletin) => broadcaster.air(bulletin)),
+    showVoice: createShowVoice(mouth),
+  };
+}
+
+function createAppScheduler(
+  dailyTimeHHMM: string,
+  idleMinutes: number,
+  weeklyTimeHHMM: string,
+  desk: AirDesk,
+): DreamScheduler {
+  return new DreamScheduler({
+    dailyTimeHHMM,
+    idleMinutes,
+    weeklyTimeHHMM,
+    runReflect: async () => {
+      const result = await reflectNow();
+      if (!result || typeof result.dreamNarrative !== "string") return;
+      const bulletin = taskBulletin(
+        reflectSpoken(result.dreamNarrative, result.appliedFacts),
+      );
+      if (bulletin) desk.post(bulletin);
+    },
+    runWeekly: async () => {
+      const result = await autoWeeklyTrigger();
+      if (!result) return;
+      const spoken = weeklySpoken(
+        result.skipped
+          ? { skipped: true, reason: result.reason }
+          : { skipped: false, greeting: result.greeting },
+      );
+      if (!spoken) return;
+      const bulletin = taskBulletin(spoken);
+      if (bulletin) desk.post(bulletin);
+    },
+    onMinute: (now) => desk.tick(now),
+    getLastReflectDate: () => getSecret(SECRET_KEYS.dreamLastReflectDate),
+    setLastReflectDate: (iso) => setSecret(SECRET_KEYS.dreamLastReflectDate, iso),
+    getLastWeeklyDate: () => getSecret(SECRET_KEYS.weeklyLastRunDate),
+    setLastWeeklyDate: (iso) => setSecret(SECRET_KEYS.weeklyLastRunDate, iso),
+  });
+}
 
 async function bootMemory(): Promise<void> {
   try {
@@ -55,6 +110,9 @@ function App() {
   const [bootDone, setBootDone] = useState(false);
   const [reflecting, setReflecting] = useState(false);
   const schedulerRef = useRef<DreamScheduler | null>(null);
+  const airRef = useRef<AirBundle | null>(null);
+  if (!airRef.current) airRef.current = createAir();
+  const air = airRef.current;
   const sulkStoreRef = useRef(
     createSulkStore({
       onChange: (snap) => {
@@ -94,17 +152,12 @@ function App() {
         const dailyTimeHHMM = dt ?? "03:14";
         const idleMinutes = dim !== null ? (Number(dim) || 0) : 30;
         const weeklyTimeHHMM = wt ?? "09:00";
-        const sched = new DreamScheduler({
+        const sched = createAppScheduler(
           dailyTimeHHMM,
           idleMinutes,
           weeklyTimeHHMM,
-          runReflect: () => reflectNow().then(() => undefined),
-          runWeekly: autoWeeklyTrigger,
-          getLastReflectDate: () => getSecret(SECRET_KEYS.dreamLastReflectDate),
-          setLastReflectDate: (iso) => setSecret(SECRET_KEYS.dreamLastReflectDate, iso),
-          getLastWeeklyDate: () => getSecret(SECRET_KEYS.weeklyLastRunDate),
-          setLastWeeklyDate: (iso) => setSecret(SECRET_KEYS.weeklyLastRunDate, iso),
-        });
+          air.desk,
+        );
         schedulerRef.current = sched;
         sched.start();
       })
@@ -129,27 +182,17 @@ function App() {
   const handleSchedulerUpdate = useCallback(
     (dailyTime: string, idleMinutes: number, weeklyTime: string) => {
       schedulerRef.current?.stop();
-      const sched = new DreamScheduler({
-        dailyTimeHHMM: dailyTime,
-        idleMinutes,
-        weeklyTimeHHMM: weeklyTime,
-        runReflect: () => reflectNow().then(() => undefined),
-        runWeekly: autoWeeklyTrigger,
-        getLastReflectDate: () => getSecret(SECRET_KEYS.dreamLastReflectDate),
-        setLastReflectDate: (iso) => setSecret(SECRET_KEYS.dreamLastReflectDate, iso),
-        getLastWeeklyDate: () => getSecret(SECRET_KEYS.weeklyLastRunDate),
-        setLastWeeklyDate: (iso) => setSecret(SECRET_KEYS.weeklyLastRunDate, iso),
-      });
+      const sched = createAppScheduler(dailyTime, idleMinutes, weeklyTime, air.desk);
       schedulerRef.current = sched;
       sched.start();
     },
-    [],
+    [air.desk],
   );
 
   // Re-evaluate after bootProviders completes so the orchestrator sees registered providers
   const orchestrator: Orchestrator | null = useMemo(
-    () => (bootDone ? createDefaultOrchestrator() : null),
-    [bootDone],
+    () => (bootDone ? createDefaultOrchestrator({ showVoice: air.showVoice }) : null),
+    [bootDone, air.showVoice],
   );
 
   const runProactiveEngineTick = useCallback(async (todayFirstOpen: boolean) => {

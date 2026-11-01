@@ -16,6 +16,8 @@ export async function reflectNow(): Promise<{
   appliedFacts: number;
   dreamAdded: boolean;
   tuningApplied: boolean;
+  /** The dream, so a bulletin can say its first sentence. */
+  dreamNarrative: string;
 }> {
   // 1. Read memory file
   const raw = await readMemoryFile();
@@ -87,5 +89,6 @@ export async function reflectNow(): Promise<{
     appliedFacts: result.factMutations.length,
     dreamAdded: true,
     tuningApplied,
+    dreamNarrative: result.dreamNarrative,
   };
 }

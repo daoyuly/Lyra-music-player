@@ -1,13 +1,21 @@
-import { SESSION_BG } from "./bgManifest";
+import { SESSION_BG, vignetteGradient } from "./bgManifest";
 
 export type BackgroundPhotoProps = {
   /** Override for tests. */
   urlOverride?: string | null;
+  position?: string;
+  vignette?: number;
 };
 
-export function BackgroundPhoto({ urlOverride }: BackgroundPhotoProps = {}) {
+export function BackgroundPhoto({
+  urlOverride,
+  position,
+  vignette,
+}: BackgroundPhotoProps = {}) {
   const url = urlOverride ?? SESSION_BG?.url ?? null;
   if (!url) return null;
+  const backgroundPosition = position ?? SESSION_BG?.position ?? "center";
+  const vignetteStrength = vignette ?? SESSION_BG?.vignette ?? 0.35;
 
   return (
     <>
@@ -18,20 +26,17 @@ export function BackgroundPhoto({ urlOverride }: BackgroundPhotoProps = {}) {
           inset: 0,
           backgroundImage: `url(${url})`,
           backgroundSize: "cover",
-          backgroundPosition: "center",
+          backgroundPosition,
           zIndex: 0,
           pointerEvents: "none",
         }}
       />
-      {/* Readability / mood vignette. Dark bottom keeps input text legible;
-          soft top mutes any hot spots in the photo. */}
       <div
         data-testid="bg-photo-vignette"
         style={{
           position: "fixed",
           inset: 0,
-          background:
-            "linear-gradient(to bottom, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.08) 40%, rgba(0,0,0,0.50) 100%)",
+          background: vignetteGradient(vignetteStrength),
           zIndex: 0,
           pointerEvents: "none",
         }}

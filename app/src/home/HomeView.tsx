@@ -3,9 +3,6 @@ import { pausePlayback, resumePlayback } from "../audio/player";
 import { AmbientBackground } from "./AmbientBackground";
 import { BackgroundPhoto } from "./BackgroundPhoto";
 import { ShanShuiCanvas } from "./ShanShuiCanvas";
-import { EmotionLightBand } from "./EmotionLightBand";
-import { SongInfo } from "./SongInfo";
-import { SmallNote } from "./SmallNote";
 import { InputBox } from "./InputBox";
 import { bindGlobalKeys } from "./keyboard";
 import { parseSlashCommand } from "./slashCommand";
@@ -16,6 +13,10 @@ import { songDisplayTitle, songDisplayArtist } from "../library/display";
 import { reloadLibrary, type ReloadProgress } from "../library/reloadLibrary";
 import type { PAD } from "../types";
 import { DemoMode } from "./DemoMode";
+import { formatShowScript } from "../show/rundown";
+import { SESSION_BG } from "./bgManifest";
+import { A2uiSurface } from "./a2ui/A2uiSurface";
+import { currentSurface, type SurfaceId } from "./a2ui/protocol";
 
 const ZERO_PAD: PAD = { p: 0, a: 0, d: 0 };
 
@@ -45,6 +46,8 @@ type HomeViewProps = {
   onOpenHelp: () => void;
   onWeek?: () => Promise<void>;
   orchestrator: Orchestrator | null;
+  /** Pin a surface. Omitted surfaces are chosen once per app launch. */
+  surfaceId?: SurfaceId;
 };
 
 export type { HomeViewProps };
@@ -57,15 +60,18 @@ function LiveHomeView({
   onOpenHelp,
   onWeek,
   orchestrator,
+  surfaceId,
 }: {
   onOpenSettings: () => void;
   onOpenDataExplorer: (tab?: DataExplorerTabId) => void;
   onOpenHelp: () => void;
   onWeek?: () => Promise<void>;
   orchestrator: Orchestrator;
+  surfaceId?: SurfaceId;
 }) {
   const { state, submit: rawSubmit } = useTurn(orchestrator);
   const [reloadStatus, setReloadStatus] = useState<string | null>(null);
+  const surface = surfaceId ?? currentSurface();
 
   // Slash commands intercept before the Orchestrator runs. Known commands
   // dispatch a UI action and never become a DialogueTurn — no LLM call,
@@ -96,8 +102,9 @@ function LiveHomeView({
   // proactive-pending 则持续展示邀约歌名，直到用户回应或状态离开。
   const playingSongId = state.kind === "playing" ? state.song.id : null;
   const pendingSongId = state.kind === "proactive-pending" ? state.song.id : null;
+  const showSongId = state.kind === "show-talk" ? state.song.id : null;
   useEffect(() => {
-    if (pendingSongId !== null) {
+    if (pendingSongId !== null || showSongId !== null) {
       setSongInfoVisible(true);
       return;
     }
@@ -108,7 +115,7 @@ function LiveHomeView({
     setSongInfoVisible(true);
     const t = setTimeout(() => setSongInfoVisible(false), 3000);
     return () => clearTimeout(t);
-  }, [playingSongId, pendingSongId]);
+  }, [playingSongId, pendingSongId, showSongId]);
 
   // Refresh emotion history whenever state transitions to playing
   useEffect(() => {
@@ -158,26 +165,34 @@ function LiveHomeView({
   const pad: PAD =
     state.kind === "playing"
       ? state.turn.current_emotion.pad
-      : ZERO_PAD;
+      : state.kind === "show-talk"
+        ? state.pad
+        : ZERO_PAD;
 
   // Keep the band painted while thinking (song switch) so we don't flash the
   // empty-state hairline. proactive-pending uses the same history if any.
   const padSamples: PAD[] =
     (state.kind === "playing" ||
       state.kind === "thinking" ||
-      state.kind === "proactive-pending") &&
+      state.kind === "proactive-pending" ||
+      state.kind === "show-talk") &&
     historicalPads.length >= 1
       ? historicalPads
       : [];
 
   const title: string =
-    state.kind === "playing" || state.kind === "proactive-pending"
+    state.kind === "playing" || state.kind === "proactive-pending" || state.kind === "show-talk"
       ? songDisplayTitle(state.song)
       : "";
 
   const artist: string =
-    state.kind === "playing" || state.kind === "proactive-pending"
+    state.kind === "playing" || state.kind === "proactive-pending" || state.kind === "show-talk"
       ? songDisplayArtist(state.song)
+      : "";
+
+  const showScript =
+    state.kind === "show-talk"
+      ? formatShowScript(state.lines, state.guestName) + (state.note ? `\n${state.note}` : "")
       : "";
 
   const noteText: string =
@@ -186,13 +201,15 @@ function LiveHomeView({
       ? "Lyra 在等你说一句话"
       : state.kind === "thinking"
         ? "…"
-        : state.kind === "playing"
-          ? state.turn.agent_response.rationale
-          : state.kind === "proactive-pending"
-            ? state.rationale
-            : state.kind === "error"
-              ? state.message
-              : "");
+        : state.kind === "show-talk"
+          ? showScript
+          : state.kind === "playing"
+            ? (state.aside ?? state.turn.agent_response.rationale)
+            : state.kind === "proactive-pending"
+              ? state.rationale
+              : state.kind === "error"
+                ? state.message
+                : "");
 
   const noteColor: string | undefined =
     state.kind === "error" && reloadStatus === null
@@ -203,8 +220,10 @@ function LiveHomeView({
   // historicalPads is only populated on state→playing, so on cold boot it's
   // empty and we render the sparse "Lyra 在听" view.
   const isSparseIdle = state.kind === "idle" && historicalPads.length === 0;
+  const sentence =
+    surface !== "room" && isSparseIdle ? (reloadStatus ?? "Lyra 在听") : noteText;
 
-  if (isSparseIdle) {
+  if (surface === "room" && isSparseIdle) {
     return (
       <AmbientBackground pad={pad}>
         <BackgroundPhoto />
@@ -216,10 +235,10 @@ function LiveHomeView({
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            padding: "var(--lyra-viewport-padding)",
+            padding: SESSION_BG?.contentPadding ?? "var(--lyra-viewport-padding)",
             gap: 0,
             position: "relative",
-            zIndex: 1,
+            zIndex: 2,
           }}
         >
           <div
@@ -246,41 +265,23 @@ function LiveHomeView({
     <AmbientBackground pad={pad}>
       <BackgroundPhoto />
       <ShanShuiCanvas pad={pad} playing={state.kind === "playing"} />
-      <div
-        style={{
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          padding: "var(--lyra-viewport-padding)",
-          gap: 0,
-          position: "relative",
-          zIndex: 1,
+      <A2uiSurface
+        surfaceId={surface}
+        samples={padSamples}
+        songVisible={songInfoVisible}
+        allowEmptySubmit={state.kind === "show-talk"}
+        onSubmit={submit}
+        model={{
+          sentence,
+          title,
+          artist,
+          placeholder:
+            state.kind === "show-talk" ? "说一句就改后面，回车马上放" : "和 Lyra 说点什么…",
+          whyLabel: title ? "为什么是这首" : "",
+          chartLabel: padSamples.length > 0 ? "这是这阵子的心情" : "",
+          noteColor,
         }}
-      >
-        <div style={{ flex: 1 }} />
-        <EmotionLightBand samples={padSamples} />
-        <div style={{ height: "var(--lyra-space-band-to-song)" }} />
-        {state.kind === "playing" || state.kind === "proactive-pending" ? (
-          <div
-            data-testid="song-info-fade"
-            style={{
-              opacity: songInfoVisible ? 1 : 0,
-              transition: "opacity 1.4s ease-out",
-              pointerEvents: songInfoVisible ? "auto" : "none",
-            }}
-          >
-            <SongInfo title={title} artist={artist} />
-          </div>
-        ) : (
-          <SongInfo title="" artist="" />
-        )}
-        <div style={{ height: "var(--lyra-space-song-to-note)" }} />
-        <SmallNote text={noteText} color={noteColor} />
-        <div style={{ flex: 1 }} />
-        <div style={{ height: "var(--lyra-space-note-to-input)" }} />
-        <InputBox onSubmit={submit} />
-      </div>
+      />
     </AmbientBackground>
   );
 }
@@ -393,6 +394,7 @@ export function HomeView({
   onOpenHelp,
   onWeek,
   orchestrator,
+  surfaceId,
 }: HomeViewProps) {
   if (orchestrator === null) {
     return <ColdBootView onOpenSettings={onOpenSettings} />;
@@ -404,6 +406,7 @@ export function HomeView({
       onOpenHelp={onOpenHelp}
       onWeek={onWeek}
       orchestrator={orchestrator}
+      surfaceId={surfaceId}
     />
   );
 }

@@ -1,9 +1,11 @@
 export type SongInfoProps = {
   title: string;
   artist: string;
+  fontSize?: string;
+  maxWidth?: string;
 };
 
-export function SongInfo({ title, artist }: SongInfoProps) {
+export function SongInfo({ title, artist, fontSize, maxWidth }: SongInfoProps) {
   const t = title.trim();
   const a = artist.trim();
   const text = t
@@ -16,13 +18,13 @@ export function SongInfo({ title, artist }: SongInfoProps) {
       data-testid="song-info"
       style={{
         color: "var(--lyra-color-song-info)",
-        fontSize: "var(--lyra-song-font-size)",
+        fontSize: fontSize ?? "var(--lyra-song-font-size)",
         fontFamily: "var(--lyra-song-family)",
         textAlign: "center",
         whiteSpace: "nowrap",
         overflow: "hidden",
         textOverflow: "ellipsis",
-        maxWidth: "var(--lyra-cover-size)",
+        maxWidth: maxWidth ?? "var(--lyra-cover-size)",
         minHeight: "1.4em",
         lineHeight: 1.6,
         letterSpacing: "0.02em",

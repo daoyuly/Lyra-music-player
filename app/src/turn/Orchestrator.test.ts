@@ -520,10 +520,10 @@ describe("Orchestrator T8: emotion prediction channel (auto-advance)", () => {
     expect(autoTurn.current_emotion.predicted_trajectory).toBeUndefined();
   });
 
-  // Regression: without exclusion the same emotion + same pseudoTarget yields
-  // the same top-ranked song, and the LLM re-picks it every time. That produced
-  // "song ends → same song replays" instead of auto-advance.
-  it("auto-advance excludes the just-played song from prefilter candidates", async () => {
+  // Regression: without a session queue the same emotion + same pseudoTarget
+  // yields the same top-ranked song every time. Auto-advance must walk to the
+  // next song in the ranked list.
+  it("auto-advance does not replay the song that just finished", async () => {
     const t1: LibraryTrack = { id: "t1", path: "/a.mp3", origin: "local", added_at: 0, title: "T1" };
     const t2: LibraryTrack = { id: "t2", path: "/b.mp3", origin: "local", added_at: 0, title: "T2" };
     const prefilter = vi.fn(
@@ -553,25 +553,18 @@ describe("Orchestrator T8: emotion prediction channel (auto-advance)", () => {
     await orc.onUserInput("start");
     expect(deps.audio.playFile).toHaveBeenLastCalledWith("/a.mp3", null);
 
-    // Song completes → auto-advance must exclude t1 and pick t2
+    // Song completes → auto-advance walks to the next ranked song
     await orc.onSongComplete();
 
-    // 2nd prefilter call is auto-advance: 4th arg must exclude t1
-    const secondCall = prefilter.mock.calls[1] as unknown as [
-      unknown, unknown, unknown, ReadonlySet<string>,
-    ];
-    expect(secondCall[3]).toBeInstanceOf(Set);
-    expect(secondCall[3].has("t1")).toBe(true);
-
-    // And audio played the OTHER song
+    const secondCall = prefilter.mock.calls[1] as unknown[];
+    expect(secondCall[5]).toBe("intent-emotion");
     expect(deps.audio.playFile).toHaveBeenLastCalledWith("/b.mp3", null);
   });
 
-  // Regression: excluding only the just-played song still lets an A→B→A→B
-  // oscillation (or a same-song loop when candidates re-rank identically) run
-  // forever. The rolling window keeps all recently picked songs excluded so
-  // the recommender is forced to reach further into the candidate pool.
-  it("auto-advance excludes the last N picked songs, not just the most recent", async () => {
+  // Regression: re-picking the current #1 after each song oscillates inside
+  // the top of the list. The session queue plays further down before anyone
+  // returns.
+  it("auto-advance keeps walking the ranked list", async () => {
     const t1: LibraryTrack = { id: "t1", path: "/a.mp3", origin: "local", added_at: 0, title: "T1" };
     const t2: LibraryTrack = { id: "t2", path: "/b.mp3", origin: "local", added_at: 0, title: "T2" };
     const t3: LibraryTrack = { id: "t3", path: "/c.mp3", origin: "local", added_at: 0, title: "T3" };
@@ -608,15 +601,140 @@ describe("Orchestrator T8: emotion prediction channel (auto-advance)", () => {
     await orc.onSongComplete();
     expect(deps.audio.playFile).toHaveBeenLastCalledWith("/b.mp3", null);
 
-    // Complete again → auto-advance excludes {t1, t2}, picks t3
+    // Complete again → still walking, so t3, not back to t1
     await orc.onSongComplete();
-    const thirdCall = prefilter.mock.calls[2] as unknown as [
-      unknown, unknown, unknown, ReadonlySet<string>,
-    ];
-    expect(thirdCall[3]).toBeInstanceOf(Set);
-    expect(thirdCall[3].has("t1")).toBe(true);
-    expect(thirdCall[3].has("t2")).toBe(true);
     expect(deps.audio.playFile).toHaveBeenLastCalledWith("/c.mp3", null);
+  });
+
+  it("walks a wide intent-emotion ranking and does not repeat within 24 songs", async () => {
+    const tracks: LibraryTrack[] = Array.from({ length: 30 }, (_, i) => ({
+      id: `t${i}`,
+      path: `/${i}.mp3`,
+      origin: "local",
+      added_at: 0,
+      title: `T${i}`,
+    }));
+    const prefilter = vi.fn(async () => tracks);
+    const choose = vi.fn(async () => ({
+      song_id: "t0",
+      target_profile: "x",
+      rationale: "y",
+      needed_shift: "接住" as const,
+    }));
+    const deps = makeDeps({
+      library: { prefilter },
+      companion: { choose },
+    });
+    const orc = new Orchestrator(deps as any);
+
+    await orc.onUserInput("start");
+    expect(deps.audio.playFile).toHaveBeenLastCalledWith("/0.mp3", null);
+
+    const advanced: string[] = [];
+    for (let n = 0; n < 24; n++) {
+      await orc.onSongComplete();
+      const path = (deps.audio.playFile as any).mock.calls.at(-1)[0] as string;
+      advanced.push(path);
+    }
+
+    expect(new Set(advanced).size).toBe(24);
+    expect(advanced[0]).toBe("/1.mp3");
+    expect(advanced[23]).toBe("/24.mp3");
+    expect(advanced).not.toContain("/0.mp3");
+    expect(choose).toHaveBeenCalledOnce();
+
+    const autoCall = prefilter.mock.calls[1] as unknown[];
+    expect(autoCall[2]).toBeGreaterThanOrEqual(24);
+    expect(autoCall[5]).toBe("intent-emotion");
+  });
+
+  it("replays the oldest song only after the rest of the pool has played", async () => {
+    const tracks: LibraryTrack[] = [
+      { id: "t0", path: "/0.mp3", origin: "local", added_at: 0, title: "T0" },
+      { id: "t1", path: "/1.mp3", origin: "local", added_at: 0, title: "T1" },
+      { id: "t2", path: "/2.mp3", origin: "local", added_at: 0, title: "T2" },
+    ];
+    const prefilter = vi.fn(async () => tracks);
+    const choose = vi.fn(async () => ({
+      song_id: "t0",
+      target_profile: "x",
+      rationale: "y",
+      needed_shift: "接住" as const,
+    }));
+    const deps = makeDeps({
+      library: { prefilter },
+      companion: { choose },
+    });
+    const orc = new Orchestrator(deps as any);
+
+    await orc.onUserInput("start");
+    await orc.onSongComplete();
+    await orc.onSongComplete();
+    await orc.onSongComplete();
+
+    const paths = (deps.audio.playFile as any).mock.calls.map((c: unknown[]) => c[0]);
+    expect(paths).toEqual(["/0.mp3", "/1.mp3", "/2.mp3", "/0.mp3"]);
+  });
+
+  it("ranks the next song while the current one is still playing", async () => {
+    const tracks: LibraryTrack[] = [
+      { id: "t0", path: "/0.mp3", origin: "local", added_at: 0, title: "T0" },
+      { id: "t1", path: "/1.mp3", origin: "local", added_at: 0, title: "T1" },
+    ];
+    let rankStarted = false;
+    const prefilter = vi.fn(async (...args: unknown[]) => {
+      if (args[5] === "intent-emotion") rankStarted = true;
+      return tracks;
+    });
+    const choose = vi.fn(async () => ({
+      song_id: "t0",
+      target_profile: "x",
+      rationale: "y",
+      needed_shift: "接住" as const,
+    }));
+    const deps = makeDeps({ library: { prefilter }, companion: { choose } });
+    const orc = new Orchestrator(deps as any);
+
+    await orc.onUserInput("start");
+
+    expect(deps.audio.playFile).toHaveBeenCalledOnce();
+    expect(rankStarted).toBe(true);
+  });
+
+  it("starts the prepared next song before saving the finished turn", async () => {
+    const tracks: LibraryTrack[] = [
+      { id: "t0", path: "/0.mp3", origin: "local", added_at: 0, title: "T0" },
+      { id: "t1", path: "/1.mp3", origin: "local", added_at: 0, title: "T1" },
+    ];
+    const marks: string[] = [];
+    const prefilter = vi.fn(async () => tracks);
+    const choose = vi.fn(async () => ({
+      song_id: "t0",
+      target_profile: "x",
+      rationale: "y",
+      needed_shift: "接住" as const,
+    }));
+    const deps = makeDeps({
+      library: { prefilter },
+      companion: { choose },
+      audio: {
+        playFile: vi.fn(async (path: string) => {
+          marks.push(`play:${path}`);
+        }),
+        stop: vi.fn(async () => {}),
+      },
+    });
+    const updateTurn = vi.fn(async () => {
+      marks.push("finalize");
+    });
+    deps.turnRepo = { insertTurn: deps.turnRepo.insertTurn, updateTurn } as any;
+    const orc = new Orchestrator(deps as any);
+
+    await orc.onUserInput("start");
+    await orc.onSongComplete();
+
+    expect(marks).toEqual(["play:/0.mp3", "play:/1.mp3", "finalize"]);
+    expect(updateTurn).toHaveBeenCalledOnce();
   });
 });
 
@@ -898,13 +1016,12 @@ describe("Orchestrator ActiveIntent (sticky listening intent)", () => {
     expect(String((prefilter.mock.calls[0] as unknown[])[0])).toContain("粤语");
 
     await orc.onSongComplete();
-    // Auto-advance target must still carry the sticky intent raw text
-    const autoTarget = String((prefilter.mock.calls[1] as unknown[])[0]);
-    expect(autoTarget).toContain("一直播放粤语歌曲");
-    // And companion receives activeIntent on auto-advance
-    const chooseAuto = (deps.companion.choose as any).mock.calls[1][0];
-    expect(chooseAuto.activeIntent?.constraints.languages).toEqual(["yue"]);
-    expect(chooseAuto.userUtterance).toBe("");
+    // Auto-advance ranks by intent + emotion and still carries the sticky text
+    const autoCall = prefilter.mock.calls[1] as unknown[];
+    expect(String(autoCall[0])).toContain("一直播放粤语歌曲");
+    expect((autoCall[4] as { constraints: { languages: string[] } }).constraints.languages).toEqual(["yue"]);
+    expect(autoCall[5]).toBe("intent-emotion");
+    expect(deps.companion.choose).toHaveBeenCalledOnce();
   });
 
   it("clears sticky intent on cancel phrases", async () => {
@@ -928,6 +1045,48 @@ describe("Orchestrator ActiveIntent (sticky listening intent)", () => {
     await orc.onUserInput("别放粤语了，随便来点");
     expect(clear).toHaveBeenCalled();
     expect(orc.getActiveIntent()).toBeNull();
+  });
+
+  // Regression: with only one annotated Cantonese track, the old hard-filter
+  // threshold (≥3) left Mandarin in the session queue — so「一直播放粤语」
+  // played Yue once, then drifted on auto-advance.
+  it("auto-advance stays on sticky language when only one annotated match exists", async () => {
+    const { LibraryAgent } = await import("../agents/LibraryAgent");
+    const yue: LibraryTrack = { id: "y1", path: "/yue.mp3", origin: "local", added_at: 0, title: "富士山下", artist: "陈奕迅" };
+    const cmn: LibraryTrack = { id: "m1", path: "/cmn.mp3", origin: "local", added_at: 0, title: "晴天", artist: "周杰伦" };
+    const library = new LibraryAgent({
+      repo: { listAll: async () => [yue, cmn] },
+      profiles: {
+        getBatch: async () =>
+          new Map([
+            ["y1", { track_id: "y1", language: "yue" as const, genres: [], mood: [], scenes: [], era: null, vocal: "male" as const, energy_check: "mid" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+            ["m1", { track_id: "m1", language: "cmn" as const, genres: [], mood: [], scenes: [], era: null, vocal: "male" as const, energy_check: "mid" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+          ]),
+      },
+      features: { getBatch: async () => new Map() },
+      lyrics: { getBatch: async () => new Map() },
+      makeProvider: async () => null,
+    });
+    const deps = makeDeps({
+      library,
+      activeIntentRepo: { load: vi.fn(async () => null), save: vi.fn(async () => {}), clear: vi.fn(async () => {}) },
+      companion: {
+        choose: vi.fn(async (input: { candidates: LibraryTrack[] }) => ({
+          song_id: input.candidates[0].id,
+          target_profile: "粤语",
+          rationale: "y",
+          needed_shift: "接住" as const,
+        })),
+      },
+    });
+    const orc = new Orchestrator(deps as any);
+
+    await orc.onUserInput("一直播放粤语音乐");
+    expect(deps.audio.playFile).toHaveBeenLastCalledWith("/yue.mp3", null);
+
+    await orc.onSongComplete();
+    // Only one Yue track — sticky language must replay it, not drift to Mandarin.
+    expect(deps.audio.playFile).toHaveBeenLastCalledWith("/yue.mp3", null);
   });
 
   it("stores target_profile on DialogueTurn.agent_response", async () => {

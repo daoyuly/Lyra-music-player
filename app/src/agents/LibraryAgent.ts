@@ -25,6 +25,20 @@ export type ProviderFactory = () => Promise<EmbeddingProvider | null>;
 
 const DEFAULT_LIMIT = 30;
 
+/** Playback ranking. `blended` keeps the historical keyword / lyric / BPM mix.
+ *  `intent-emotion` sorts by listening intent, then emotion fit. Keyword,
+ *  lyric similarity, and BPM only break ties so a small lyrical cluster
+ *  cannot pin the queue to a handful of songs. */
+export type PrefilterRank = "blended" | "intent-emotion";
+
+/** Ceiling of intentMatchBoost (language 0.5 + genre 0.25 + scene 0.15). */
+const INTENT_BOOST_MAX = 0.9;
+/** Intent is an order of magnitude above emotion so a constraint match
+ *  always outranks a closer mood on a non-matching track. */
+const INTENT_AXIS = 10;
+/** Tie-breakers stay inside this band, smaller than a meaningful emotion gap. */
+const INTENT_EMOTION_TIE = 0.02;
+
 /** Weights when all four signals are present. sem leads (lyrics-embedding
  *  match is sharpest), pad + bpm mid, kw a small tie-breaker. Missing
  *  signals drop out and remaining weights renormalize in combineWeighted. */
@@ -174,6 +188,7 @@ export class LibraryAgent {
     limit = DEFAULT_LIMIT,
     excludeIds?: ReadonlySet<string>,
     intent?: ActiveIntent,
+    rankBy: PrefilterRank = "blended",
   ): Promise<LibraryTrack[]> {
     const tokens = tokenize(target);
     const allRaw = await this.repo.listAll();
@@ -188,15 +203,17 @@ export class LibraryAgent {
       .getBatch(ids)
       .catch(() => new Map<string, TrackProfile>());
 
-    // Hard language filter when ActiveIntent demands it AND we have enough
-    // annotated matches. Otherwise fall through to soft boost so an empty /
-    // partially-annotated library still plays something.
+    // Hard language filter when ActiveIntent demands a language and at least
+    // one annotated match exists. Requiring 3+ matches used to let Mandarin
+    // leak into the sticky-粤语 session queue after the first Cantonese song.
+    // Zero matches still fall through to soft boost so an unannotated library
+    // can play something.
     const wantLangs = intent?.constraints.languages;
     if (wantLangs && wantLangs.length > 0) {
       const hard = all.filter((t) =>
         matchesHardLanguage(profilesByTrack.get(t.id), wantLangs),
       );
-      if (hard.length >= Math.min(3, limit)) {
+      if (hard.length > 0) {
         all = hard;
       }
     }
@@ -229,7 +246,16 @@ export class LibraryAgent {
     const bpmTarget = padToBpm(currentPAD);
     const anyIntentBoost = Boolean(intent) && profilesByTrack.size > 0;
 
-    if (!anyKeyword && !anyFeatures && !anySem && !anyBpm && !anyIntentBoost) {
+    // Intent-emotion order must stay deterministic. Shuffling ties would
+    // reshuffle the session queue every time the mood bucket is rebuilt.
+    if (
+      rankBy !== "intent-emotion" &&
+      !anyKeyword &&
+      !anyFeatures &&
+      !anySem &&
+      !anyBpm &&
+      !anyIntentBoost
+    ) {
       return shuffle(all).slice(0, limit);
     }
 
@@ -251,6 +277,17 @@ export class LibraryAgent {
         lyrEmb.embedding.length === targetVec.length
       ) {
         scores.sem = 1 - cosineDistance(targetVec, lyrEmb.embedding);
+      }
+      if (rankBy === "intent-emotion") {
+        const emotion = scores.pad ?? 0.5;
+        const boost = intentMatchBoost(profilesByTrack.get(t.id), intent);
+        const tie = combineWeighted({
+          ...(scores.kw !== undefined ? { kw: scores.kw } : {}),
+          ...(scores.sem !== undefined ? { sem: scores.sem } : {}),
+          ...(scores.bpm !== undefined ? { bpm: scores.bpm } : {}),
+        });
+        const intentAxis = intent ? (boost / INTENT_BOOST_MAX) * INTENT_AXIS : 0;
+        return { t, score: intentAxis + emotion + tie * INTENT_EMOTION_TIE };
       }
       const base = combineWeighted(scores);
       const boost = intentMatchBoost(profilesByTrack.get(t.id), intent);

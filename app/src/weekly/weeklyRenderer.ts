@@ -38,12 +38,17 @@ const FALLBACK_COPY = {
   closing: "我在这里。",
 } as const;
 
+/** The sentence a bulletin can read aloud. Fallback letters use the standing apology. */
+export function letterOpening(letter: WeeklyLetterJson, fallback: boolean): string {
+  return (fallback ? FALLBACK_COPY.greeting : letter.greeting).trim();
+}
+
 export function render(
   letter: WeeklyLetterJson,
   raw: WeeklyRawData,
   opts: { fallback: boolean },
 ): string {
-  const g = opts.fallback ? FALLBACK_COPY.greeting : letter.greeting;
+  const g = letterOpening(letter, opts.fallback);
   const b = opts.fallback ? FALLBACK_COPY.body : letter.body;
   const c = opts.fallback ? FALLBACK_COPY.closing : letter.closing;
 

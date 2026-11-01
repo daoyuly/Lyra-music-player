@@ -1,11 +1,12 @@
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
+use rustfft::{num_complex::Complex, Fft, FftPlanner};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // Extra time we wait past the declared song duration before assuming the
 // primary Sink::empty() watcher will never fire. Covers decoder tail latency,
@@ -52,6 +53,12 @@ pub struct AudioPlayer {
     // 记忆化的当前音量。set_volume 更新它,play_file 在开新 Sink 后立刻应用,
     // 避免动态音量控制器压低到 0.7 后,下一首恢复到 1.0。
     volume: Arc<Mutex<f32>>,
+    /// Host lines share one sink so the next sentence starts when the
+    /// previous source ends, without launching a new player.
+    speech: Arc<Mutex<Option<Sink>>>,
+    // Live three-band spectrum of the song currently in the sink.
+    // The audio thread only writes samples; FFT runs when the UI asks.
+    spectrum: Arc<SpectrumBus>,
     // Signal the audio thread to drop the OutputStream and exit.
     shutdown: Option<mpsc::Sender<()>>,
     // Kept so Drop can join the worker before the AudioPlayer disappears.
@@ -96,6 +103,8 @@ impl AudioPlayer {
             current_id: Arc::new(AtomicU64::new(0)),
             paused: Arc::new(Mutex::new(PauseState::default())),
             volume: Arc::new(Mutex::new(1.0)),
+            speech: Arc::new(Mutex::new(None)),
+            spectrum: Arc::new(SpectrumBus::new()),
             shutdown: Some(shutdown_tx),
             worker: Some(worker),
         })
@@ -129,6 +138,12 @@ impl AudioPlayer {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let decoder = Decoder::new(reader).map_err(|e| AudioError::Decode(e.to_string()))?;
+        // convert_samples yields f32 in [-1, 1]. The tap copies those
+        // samples into a ring; it does not filter or delay playback.
+        let tapped = FreqTap::new(
+            decoder.convert_samples::<f32>(),
+            Arc::clone(&self.spectrum),
+        );
 
         // Create the sink upfront so a failure here doesn't leave shared
         // state half-mutated. The sink attaches to the OutputStreamHandle
@@ -152,7 +167,7 @@ impl AudioPlayer {
             // Append AFTER stopping the old sink — otherwise both sinks
             // feed the shared handle for a lock-acquisition-window worth
             // of samples, causing audible double-audio at each swap.
-            new_sink.append(decoder);
+            new_sink.append(tapped);
             *guard = Some(new_sink);
         }
 
@@ -265,6 +280,15 @@ impl AudioPlayer {
         if let Some(sink) = guard.take() {
             sink.stop();
         }
+        drop(guard);
+        self.spectrum.silence();
+    }
+
+    /// Latest low / mid / high energy of the playing song, each in [0, 1],
+    /// plus a low-band onset pulse. All zeros when nothing is playing.
+    /// The FFT runs here, on the caller thread, never inside the audio callback.
+    pub fn spectrum(&self) -> PlaybackSpectrum {
+        self.spectrum.snapshot()
     }
 
     pub fn is_playing(&self) -> bool {
@@ -326,12 +350,50 @@ impl AudioPlayer {
         if let Some(sink) = guard.as_ref() {
             sink.set_volume(clamped);
         }
+        drop(guard);
+        if let Some(sink) = self.speech.lock().unwrap().as_ref() {
+            sink.set_volume(clamped);
+        }
+    }
+
+    /// Queue one spoken line on the speech sink. A later line appended while
+    /// an earlier one is still playing starts immediately after it.
+    pub fn enqueue_speech(&self, wav: &[u8]) -> Result<(), String> {
+        let decoder = Decoder::new(std::io::Cursor::new(wav.to_vec()))
+            .map_err(|err| format!("speech decode: {err}"))?;
+        let volume = *self.volume.lock().unwrap();
+        let mut guard = self.speech.lock().unwrap();
+        if let Some(sink) = guard.as_ref() {
+            sink.set_volume(volume);
+            sink.append(decoder);
+            return Ok(());
+        }
+        let sink = Sink::try_new(&self.handle).map_err(|err| format!("speech sink: {err}"))?;
+        sink.set_volume(volume);
+        sink.append(decoder);
+        *guard = Some(sink);
+        Ok(())
+    }
+
+    pub fn speech_busy(&self) -> bool {
+        self.speech
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|sink| !sink.empty())
+    }
+
+    pub fn stop_speech(&self) {
+        if let Some(sink) = self.speech.lock().unwrap().take() {
+            sink.stop();
+        }
     }
 
     /// 读回当前音量,主要给测试和调试用。
     pub fn get_volume(&self) -> f32 {
         *self.volume.lock().unwrap()
     }
+
 }
 
 impl Drop for AudioPlayer {
@@ -339,6 +401,11 @@ impl Drop for AudioPlayer {
         // Kill any live sink first so its Drop doesn't race with the audio
         // thread's OutputStream teardown.
         if let Ok(mut guard) = self.sink.lock() {
+            if let Some(sink) = guard.take() {
+                sink.stop();
+            }
+        }
+        if let Ok(mut guard) = self.speech.lock() {
             if let Some(sink) = guard.take() {
                 sink.stop();
             }
@@ -352,5 +419,333 @@ impl Drop for AudioPlayer {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+/// Three bands the room animation listens to, each in [0, 1].
+/// `pulse` is the rising edge of the low band — a soft beat, not a click track.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct PlaybackSpectrum {
+    pub low: f32,
+    pub mid: f32,
+    pub high: f32,
+    pub pulse: f32,
+}
+
+const RING: usize = 8192;
+const FRAME: usize = 1024;
+
+struct SpectrumBus {
+    ring: Box<[AtomicU32]>,
+    write: AtomicUsize,
+    live: AtomicBool,
+    sample_rate: AtomicU32,
+    low: AtomicU32,
+    mid: AtomicU32,
+    high: AtomicU32,
+    pulse: AtomicU32,
+    prev_low: AtomicU32,
+    analyzed: AtomicUsize,
+    analyzed_at: AtomicU64,
+    analyzer: Mutex<BandAnalyzer>,
+}
+
+struct BandAnalyzer {
+    fft: Arc<dyn Fft<f32>>,
+    scratch: Vec<Complex<f32>>,
+    window: Vec<f32>,
+}
+
+impl SpectrumBus {
+    fn new() -> Self {
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(FRAME);
+        let window: Vec<f32> = (0..FRAME)
+            .map(|i| {
+                0.5 - 0.5
+                    * (2.0 * std::f32::consts::PI * i as f32 / (FRAME as f32 - 1.0)).cos()
+            })
+            .collect();
+        let ring = (0..RING).map(|_| AtomicU32::new(0)).collect::<Vec<_>>().into_boxed_slice();
+        Self {
+            ring,
+            write: AtomicUsize::new(0),
+            live: AtomicBool::new(false),
+            sample_rate: AtomicU32::new(44_100),
+            low: AtomicU32::new(0),
+            mid: AtomicU32::new(0),
+            high: AtomicU32::new(0),
+            pulse: AtomicU32::new(0),
+            prev_low: AtomicU32::new(0),
+            analyzed: AtomicUsize::new(0),
+            analyzed_at: AtomicU64::new(0),
+            analyzer: Mutex::new(BandAnalyzer {
+                fft,
+                scratch: vec![Complex::new(0.0, 0.0); FRAME],
+                window,
+            }),
+        }
+    }
+
+    fn arm(&self) {
+        let w = self.write.load(Ordering::Relaxed);
+        self.analyzed.store(w, Ordering::Relaxed);
+        self.analyzed_at.store(now_ms(), Ordering::Relaxed);
+        self.live.store(true, Ordering::Relaxed);
+        self.store_bands(PlaybackSpectrum { low: 0.0, mid: 0.0, high: 0.0, pulse: 0.0 });
+        store_f(&self.prev_low, 0.0);
+    }
+
+    fn silence(&self) {
+        self.live.store(false, Ordering::Relaxed);
+        self.store_bands(PlaybackSpectrum { low: 0.0, mid: 0.0, high: 0.0, pulse: 0.0 });
+    }
+
+    fn push(&self, sample: f32) {
+        let sample = if sample.is_finite() { sample } else { 0.0 };
+        let i = self.write.fetch_add(1, Ordering::Relaxed);
+        self.ring[i & (RING - 1)].store(sample.to_bits(), Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> PlaybackSpectrum {
+        if !self.live.load(Ordering::Relaxed) {
+            return PlaybackSpectrum { low: 0.0, mid: 0.0, high: 0.0, pulse: 0.0 };
+        }
+        let end = self.write.load(Ordering::Relaxed);
+        let prev = self.analyzed.load(Ordering::Relaxed);
+        if end < FRAME || end.wrapping_sub(prev) < FRAME {
+            return self.decayed();
+        }
+        let mut mono = [0.0f32; FRAME];
+        let start = end - FRAME;
+        for i in 0..FRAME {
+            let bits = self.ring[(start + i) & (RING - 1)].load(Ordering::Relaxed);
+            mono[i] = f32::from_bits(bits);
+        }
+        let sr = self.sample_rate.load(Ordering::Relaxed).max(1);
+        let prev_low = load_f(&self.prev_low);
+        let mut guard = match self.analyzer.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let BandAnalyzer { fft, scratch, window } = &mut *guard;
+        for i in 0..FRAME {
+            let s = mono[i];
+            scratch[i] = Complex::new(if s.is_finite() { s * window[i] } else { 0.0 }, 0.0);
+        }
+        fft.process(scratch);
+        let bands = fold_bands(scratch, sr, prev_low);
+        drop(guard);
+        self.analyzed.store(end, Ordering::Relaxed);
+        self.analyzed_at.store(now_ms(), Ordering::Relaxed);
+        store_f(&self.prev_low, bands.low);
+        self.store_bands(bands);
+        bands
+    }
+
+    fn decayed(&self) -> PlaybackSpectrum {
+        let age = now_ms().saturating_sub(self.analyzed_at.load(Ordering::Relaxed));
+        let k = (-(age as f32) / 240.0).exp();
+        PlaybackSpectrum {
+            low: load_f(&self.low) * k,
+            mid: load_f(&self.mid) * k,
+            high: load_f(&self.high) * k,
+            pulse: load_f(&self.pulse) * k,
+        }
+    }
+
+    fn store_bands(&self, bands: PlaybackSpectrum) {
+        store_f(&self.low, bands.low);
+        store_f(&self.mid, bands.mid);
+        store_f(&self.high, bands.high);
+        store_f(&self.pulse, bands.pulse);
+    }
+}
+
+/// Hann-windowed 1024-point FFT folded into low / mid / high plus a low-band pulse.
+/// A full-scale sine near a band center should land mostly in that band.
+#[cfg(test)]
+pub(crate) fn spectrum_bands(mono: &[f32], sample_rate: u32, prev_low: f32) -> PlaybackSpectrum {
+    if mono.len() < FRAME || sample_rate == 0 {
+        return PlaybackSpectrum { low: 0.0, mid: 0.0, high: 0.0, pulse: 0.0 };
+    }
+    let samples = &mono[mono.len() - FRAME..];
+    let mut buf: Vec<Complex<f32>> = Vec::with_capacity(FRAME);
+    for i in 0..FRAME {
+        let w = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (FRAME as f32 - 1.0)).cos();
+        let s = samples[i];
+        buf.push(Complex::new(if s.is_finite() { s * w } else { 0.0 }, 0.0));
+    }
+    let mut planner = FftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(FRAME);
+    fft.process(&mut buf);
+    fold_bands(&buf, sample_rate, prev_low)
+}
+
+fn fold_bands(buf: &[Complex<f32>], sample_rate: u32, prev_low: f32) -> PlaybackSpectrum {
+    let bin_hz = sample_rate as f32 / FRAME as f32;
+    let mut low_p = 0.0f32;
+    let mut mid_p = 0.0f32;
+    let mut high_p = 0.0f32;
+    for k in 1..FRAME / 2 {
+        let hz = k as f32 * bin_hz;
+        let mag = buf[k].norm();
+        let p = mag * mag;
+        if hz < 180.0 {
+            low_p += p;
+        } else if hz < 2_000.0 {
+            mid_p += p;
+        } else if hz < 8_000.0 {
+            high_p += p;
+        }
+    }
+    let low = band_level(low_p);
+    let mid = band_level(mid_p);
+    let high = band_level(high_p);
+    let pulse = ((low - prev_low) * 2.8).clamp(0.0, 1.0);
+    PlaybackSpectrum { low, mid, high, pulse }
+}
+
+/// Map one band's power to 0..1. Real music spreads across bins and used to
+/// sit near 0.1, which the picture could not show. The curve lifts that
+/// quiet range; a full-scale sine still clamps near 1.
+fn band_level(power: f32) -> f32 {
+    let rms = (power / (FRAME as f32 * FRAME as f32)).sqrt();
+    (1.0 - (-rms * 28.0).exp()).clamp(0.0, 1.0)
+}
+
+fn store_f(slot: &AtomicU32, v: f32) {
+    slot.store(v.to_bits(), Ordering::Relaxed);
+}
+
+fn load_f(slot: &AtomicU32) -> f32 {
+    f32::from_bits(slot.load(Ordering::Relaxed))
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Copies playback samples into the spectrum ring. `next` stays allocation-free.
+struct FreqTap<S> {
+    inner: S,
+    bus: Arc<SpectrumBus>,
+    channels: u16,
+    acc: f32,
+    seen: u16,
+}
+
+impl<S> FreqTap<S>
+where
+    S: Source<Item = f32>,
+{
+    fn new(inner: S, bus: Arc<SpectrumBus>) -> Self {
+        let channels = inner.channels().max(1);
+        let rate = inner.sample_rate().max(1);
+        bus.sample_rate.store(rate, Ordering::Relaxed);
+        bus.arm();
+        Self {
+            inner,
+            bus,
+            channels,
+            acc: 0.0,
+            seen: 0,
+        }
+    }
+}
+
+impl<S> Iterator for FreqTap<S>
+where
+    S: Iterator<Item = f32>,
+{
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        let sample = self.inner.next()?;
+        self.acc += sample;
+        self.seen += 1;
+        if self.seen >= self.channels {
+            let mono = self.acc / self.channels as f32;
+            self.acc = 0.0;
+            self.seen = 0;
+            self.bus.push(mono);
+        }
+        Some(sample)
+    }
+}
+
+impl<S> Source for FreqTap<S>
+where
+    S: Source<Item = f32>,
+{
+    fn current_frame_len(&self) -> Option<usize> {
+        self.inner.current_frame_len()
+    }
+
+    fn channels(&self) -> u16 {
+        self.inner.channels()
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+}
+
+#[cfg(test)]
+mod spectrum_tests {
+    use super::spectrum_bands;
+
+    fn sine(freq: f32, sr: u32, n: usize) -> Vec<f32> {
+        (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sr as f32).sin())
+            .collect()
+    }
+
+    #[test]
+    fn a_low_sine_lands_in_the_low_band() {
+        let s = sine(100.0, 44_100, 1024);
+        let b = spectrum_bands(&s, 44_100, 0.0);
+        assert!(b.low > b.mid && b.low > b.high, "low={} mid={} high={}", b.low, b.mid, b.high);
+        assert!(b.low > 0.35, "low={}", b.low);
+    }
+
+    #[test]
+    fn a_mid_sine_lands_in_the_mid_band() {
+        let s = sine(1_000.0, 44_100, 1024);
+        let b = spectrum_bands(&s, 44_100, 0.0);
+        assert!(b.mid > b.low && b.mid > b.high, "low={} mid={} high={}", b.low, b.mid, b.high);
+        assert!(b.mid > 0.35, "mid={}", b.mid);
+    }
+
+    #[test]
+    fn a_high_sine_lands_in_the_high_band() {
+        let s = sine(6_000.0, 44_100, 1024);
+        let b = spectrum_bands(&s, 44_100, 0.0);
+        assert!(b.high > b.low && b.high > b.mid, "low={} mid={} high={}", b.low, b.mid, b.high);
+        assert!(b.high > 0.35, "high={}", b.high);
+    }
+
+    #[test]
+    fn silence_is_still() {
+        let s = vec![0.0f32; 1024];
+        let b = spectrum_bands(&s, 44_100, 0.0);
+        assert_eq!(b.low, 0.0);
+        assert_eq!(b.mid, 0.0);
+        assert_eq!(b.high, 0.0);
+        assert_eq!(b.pulse, 0.0);
+    }
+
+    #[test]
+    fn a_rising_low_band_makes_a_pulse() {
+        let s = sine(100.0, 44_100, 1024);
+        let b = spectrum_bands(&s, 44_100, 0.0);
+        assert!(b.pulse > 0.4, "pulse={}", b.pulse);
     }
 }

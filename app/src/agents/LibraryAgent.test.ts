@@ -327,6 +327,15 @@ describe("LibraryAgent.prefilter", () => {
   });
 
   describe("ActiveIntent language hard filter via DJ profiles", () => {
+    const yueIntent = {
+      rawText: "一直播放粤语歌曲",
+      constraints: { languages: ["yue"] },
+      persistence: "sticky" as const,
+      source: "user-explicit" as const,
+      createdAt: 0,
+      turnId: "t",
+    };
+
     it("prefers tracks matching intent.languages when enough profiles exist", async () => {
       const tracks = [
         track("y1", "富士山下", "陈奕迅"),
@@ -349,16 +358,174 @@ describe("LibraryAgent.prefilter", () => {
         features: { getBatch: async () => new Map() },
         lyrics: { getBatch: async () => new Map() },
       });
-      const out = await agent.prefilter("延续", neutralPAD, 5, undefined, {
-        rawText: "一直播放粤语歌曲",
+      const out = await agent.prefilter("延续", neutralPAD, 5, undefined, yueIntent);
+      expect(out.every((t) => t.id.startsWith("y"))).toBe(true);
+      expect(out.length).toBe(3);
+    });
+
+    // Sticky「一直播放粤语」must hard-lock as soon as any annotated match
+    // exists. Waiting for 3 matches let a Mandarin track leak into the
+    // session queue right after the first Cantonese song.
+    it("hard-filters language even when only one annotated match exists", async () => {
+      const tracks = [
+        track("y1", "富士山下", "陈奕迅"),
+        track("m1", "晴天", "周杰伦"),
+        track("m2", "七里香", "周杰伦"),
+        track("e1", "Hello", "Adele"),
+      ];
+      const profiles = new Map([
+        ["y1", { track_id: "y1", language: "yue" as const, genres: [], mood: [], scenes: [], era: null, vocal: "male" as const, energy_check: "mid" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+        ["m1", { track_id: "m1", language: "cmn" as const, genres: [], mood: [], scenes: [], era: null, vocal: "male" as const, energy_check: "mid" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+        ["m2", { track_id: "m2", language: "cmn" as const, genres: [], mood: [], scenes: [], era: null, vocal: "male" as const, energy_check: "mid" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+        ["e1", { track_id: "e1", language: "en" as const, genres: [], mood: [], scenes: [], era: null, vocal: "female" as const, energy_check: "low" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+      ]);
+      const agent = new LibraryAgent({
+        repo: { listAll: async () => tracks },
+        profiles: { getBatch: async () => profiles },
+        makeProvider: async () => null,
+        features: { getBatch: async () => new Map() },
+        lyrics: { getBatch: async () => new Map() },
+      });
+      const out = await agent.prefilter("延续", neutralPAD, 10_000, undefined, yueIntent, "intent-emotion");
+      expect(out.map((t) => t.id)).toEqual(["y1"]);
+    });
+
+    it("falls through to soft ranking when no annotated language match exists", async () => {
+      const tracks = [
+        track("m1", "晴天", "周杰伦"),
+        track("e1", "Hello", "Adele"),
+      ];
+      const profiles = new Map([
+        ["m1", { track_id: "m1", language: "cmn" as const, genres: [], mood: [], scenes: [], era: null, vocal: "male" as const, energy_check: "mid" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+        ["e1", { track_id: "e1", language: "en" as const, genres: [], mood: [], scenes: [], era: null, vocal: "female" as const, energy_check: "low" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+      ]);
+      const agent = new LibraryAgent({
+        repo: { listAll: async () => tracks },
+        profiles: { getBatch: async () => profiles },
+        makeProvider: async () => null,
+        features: { getBatch: async () => new Map() },
+        lyrics: { getBatch: async () => new Map() },
+      });
+      const out = await agent.prefilter("延续", neutralPAD, 10, undefined, yueIntent);
+      expect(out.map((t) => t.id).sort()).toEqual(["e1", "m1"]);
+    });
+  });
+
+  describe("intent-emotion ranking", () => {
+    function makeTrack(id: string, title: string): LibraryTrack {
+      return { id, path: `/${id}.mp3`, origin: "local", added_at: 0, title };
+    }
+
+    it("orders by emotion fit and does not let lyric similarity jump the queue", async () => {
+      const tracks = [makeTrack("lyric", "piano"), makeTrack("mood", "silence")];
+      const featuresMap = new Map([
+        ["lyric", { track_id: "lyric", bpm: null, energy: 1, valence: 1 }],
+        ["mood", { track_id: "mood", bpm: null, energy: 0, valence: 0 }],
+      ]);
+      const target = Float32Array.from([1, 0]);
+      const lyricsMap = new Map<string, LyricsEmbedding>([
+        ["lyric", {
+          trackId: "lyric",
+          lyricsHash: "",
+          modelId: "test",
+          dim: 2,
+          embedding: Float32Array.from([0.99, 0.1]),
+          updatedAt: 0,
+        }],
+        ["mood", {
+          trackId: "mood",
+          lyricsHash: "",
+          modelId: "test",
+          dim: 2,
+          embedding: Float32Array.from([0.1, 0.99]),
+          updatedAt: 0,
+        }],
+      ]);
+      const agent = new LibraryAgent({
+        repo: { listAll: async () => tracks },
+        features: { getBatch: async () => featuresMap },
+        lyrics: { getBatch: async () => lyricsMap },
+        makeProvider: async () => ({ modelId: "test", dim: 2, embed: async () => target }),
+      });
+      const out = await agent.prefilter(
+        "piano",
+        { p: -1, a: -1, d: 0 },
+        10,
+        undefined,
+        undefined,
+        "intent-emotion",
+      );
+      expect(out.map((t) => t.id)).toEqual(["mood", "lyric"]);
+    });
+
+    it("ranks a genre intent match ahead of a closer emotion on a non-matching track", async () => {
+      // Genres are soft-boost only (no hard filter), so both tracks stay in
+      // the pool — unlike language, which hard-locks when any match exists.
+      const tracks = [makeTrack("pop", "Hello"), makeTrack("jazz", "Blue")];
+      const featuresMap = new Map([
+        ["pop", { track_id: "pop", bpm: null, energy: 0, valence: 0 }],
+        ["jazz", { track_id: "jazz", bpm: null, energy: 1, valence: 1 }],
+      ]);
+      const profiles = new Map([
+        ["pop", { track_id: "pop", language: "en" as const, genres: ["流行"], mood: [], scenes: [], era: null, vocal: "female" as const, energy_check: "low" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+        ["jazz", { track_id: "jazz", language: "en" as const, genres: ["爵士"], mood: [], scenes: [], era: null, vocal: "male" as const, energy_check: "high" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+      ]);
+      const agent = new LibraryAgent({
+        repo: { listAll: async () => tracks },
+        features: { getBatch: async () => featuresMap },
+        lyrics: { getBatch: async () => new Map() },
+        profiles: { getBatch: async () => profiles },
+        makeProvider: async () => null,
+      });
+      const out = await agent.prefilter("延续", { p: -1, a: -1, d: 0 }, 10, undefined, {
+        rawText: "一直播放爵士",
+        constraints: { genres: ["爵士"] },
+        persistence: "sticky",
+        source: "user-explicit",
+        createdAt: 0,
+        turnId: "t",
+      }, "intent-emotion");
+      expect(out.map((t) => t.id)).toEqual(["jazz", "pop"]);
+    });
+
+    it("returns the wide pool instead of stopping at the blended default of 30", async () => {
+      const many = Array.from({ length: 40 }, (_, i) => makeTrack(`t${i}`, `T${i}`));
+      const agent = new LibraryAgent({
+        repo: { listAll: async () => many },
+        features: { getBatch: async () => new Map() },
+        lyrics: { getBatch: async () => new Map() },
+        makeProvider: async () => null,
+      });
+      const out = await agent.prefilter("延续", neutralPAD, 40, undefined, undefined, "intent-emotion");
+      expect(out.map((t) => t.id)).toEqual(many.map((t) => t.id));
+    });
+
+    it("within the same intent, closer emotion comes first", async () => {
+      const tracks = [makeTrack("far", "A"), makeTrack("near", "B")];
+      const featuresMap = new Map([
+        ["far", { track_id: "far", bpm: null, energy: 1, valence: 1 }],
+        ["near", { track_id: "near", bpm: null, energy: 0, valence: 0 }],
+      ]);
+      const profiles = new Map([
+        ["far", { track_id: "far", language: "yue" as const, genres: [], mood: [], scenes: [], era: null, vocal: "male" as const, energy_check: "high" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+        ["near", { track_id: "near", language: "yue" as const, genres: [], mood: [], scenes: [], era: null, vocal: "female" as const, energy_check: "low" as const, one_liner: "", annotated_at: 0, model: "dj-v1" }],
+      ]);
+      const agent = new LibraryAgent({
+        repo: { listAll: async () => tracks },
+        features: { getBatch: async () => featuresMap },
+        lyrics: { getBatch: async () => new Map() },
+        profiles: { getBatch: async () => profiles },
+        makeProvider: async () => null,
+      });
+      const out = await agent.prefilter("延续", { p: -1, a: -1, d: 0 }, 10, undefined, {
+        rawText: "粤语",
         constraints: { languages: ["yue"] },
         persistence: "sticky",
         source: "user-explicit",
         createdAt: 0,
         turnId: "t",
-      });
-      expect(out.every((t) => t.id.startsWith("y"))).toBe(true);
-      expect(out.length).toBe(3);
+      }, "intent-emotion");
+      expect(out.map((t) => t.id)).toEqual(["near", "far"]);
     });
   });
 });

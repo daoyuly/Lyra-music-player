@@ -5,6 +5,8 @@ export type SmallNoteProps = {
   ellipsizeAt?: number;
   autoCollapseMs?: number;
   color?: string;
+  size?: string;
+  maxWidth?: string;
 };
 
 export function SmallNote({
@@ -12,6 +14,8 @@ export function SmallNote({
   ellipsizeAt = 40,
   autoCollapseMs = 8_000,
   color,
+  size,
+  maxWidth,
 }: SmallNoteProps) {
   const [expanded, setExpanded] = useState(false);
 
@@ -31,11 +35,11 @@ export function SmallNote({
       onClick={() => isLong && setExpanded((e) => !e)}
       style={{
         color: color ?? "var(--lyra-color-small-note)",
-        fontSize: "var(--lyra-note-font-size)",
+        fontSize: size ?? "var(--lyra-note-font-size)",
         fontFamily: "var(--lyra-note-family)",
         fontStyle: "italic",
         textAlign: "center",
-        maxWidth: "var(--lyra-cover-size)",
+        maxWidth: maxWidth ?? "var(--lyra-cover-size)",
         cursor: isLong ? "pointer" : "default",
         lineHeight: 1.7,
         transition: "var(--lyra-transition-note-height)",

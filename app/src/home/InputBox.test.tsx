@@ -6,7 +6,10 @@ import { bus as perceptionBus } from "../perception/events";
 describe("InputBox", () => {
   it("renders with the default placeholder", () => {
     render(<InputBox onSubmit={() => {}} />);
-    expect(screen.getByPlaceholderText("和 Lyra 说点什么…")).toBeInTheDocument();
+    const input = screen.getByPlaceholderText("和 Lyra 说点什么…") as HTMLTextAreaElement;
+    expect(input).toBeInTheDocument();
+    expect(input.style.backdropFilter || "").toBe("");
+    expect(input.style.background).toBe("transparent");
   });
 
   it("uses a custom placeholder when provided", () => {
@@ -22,6 +25,20 @@ describe("InputBox", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(spy).toHaveBeenCalledWith("最近有点累");
     expect(input.value).toBe("");
+  });
+
+  it("does not submit an empty line", () => {
+    const spy = vi.fn();
+    render(<InputBox onSubmit={spy} />);
+    fireEvent.keyDown(screen.getByTestId("lyra-input"), { key: "Enter" });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("submits an empty line when a show is waiting for the song", () => {
+    const spy = vi.fn();
+    render(<InputBox onSubmit={spy} allowEmptySubmit placeholder="回车放这首，或说一句改后面" />);
+    fireEvent.keyDown(screen.getByPlaceholderText("回车放这首，或说一句改后面"), { key: "Enter" });
+    expect(spy).toHaveBeenCalledWith("");
   });
 
   it("does not submit on Shift+Enter (multi-line)", () => {

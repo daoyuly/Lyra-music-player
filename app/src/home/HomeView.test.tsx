@@ -125,6 +125,22 @@ describe("HomeView — playing state", () => {
     expect(screen.getByTestId("small-note")).toHaveTextContent("舒缓的旋律，陪你慢下来");
   });
 
+  it("can pin an award surface instead of the room", () => {
+    const orc = makeStubOrchestrator(playingState);
+    render(
+      <HomeView
+        onOpenSettings={() => {}}
+        onOpenDataExplorer={() => {}}
+        onOpenHelp={() => {}}
+        orchestrator={orc}
+        surfaceId="one-line"
+      />,
+    );
+    expect(screen.getByTestId("lyra-surface")).toHaveAttribute("data-surface", "one-line");
+    expect(screen.getByText("舒缓的旋律，陪你慢下来")).toBeInTheDocument();
+    expect(screen.queryByTestId("small-note")).not.toBeInTheDocument();
+  });
+
   it("renders emotion light band with PAD samples", () => {
     const orc = makeStubOrchestrator(playingState);
     render(<HomeView onOpenSettings={() => {}} onOpenDataExplorer={() => {}} onOpenHelp={() => {}} orchestrator={orc} />);
@@ -176,5 +192,34 @@ describe("HomeView — error state", () => {
     expect(screen.getByTestId("small-note")).toHaveTextContent(
       "library is empty; add music in Settings",
     );
+  });
+});
+
+describe("HomeView — show-talk", () => {
+  it("shows both hosts and the song that will play next", () => {
+    const orc = makeStubOrchestrator({
+      kind: "show-talk",
+      guestName: "林",
+      lines: [
+        { speaker: "lyra", text: "雨还在下。" },
+        { speaker: "guest", text: "先放这首。" },
+      ],
+      song: {
+        id: "a",
+        path: "/a.mp3",
+        title: "雨",
+        artist: "陈奕迅",
+        origin: "local",
+        added_at: 0,
+      },
+      beatIndex: 0,
+      beatCount: 2,
+      pad: { p: 0, a: 0, d: 0 },
+    });
+    render(<HomeView onOpenSettings={() => {}} onOpenDataExplorer={() => {}} onOpenHelp={() => {}} orchestrator={orc} />);
+    expect(screen.getByTestId("small-note").textContent).toContain("Lyra  雨还在下。");
+    expect(screen.getByTestId("small-note").textContent).toContain("林  先放这首。");
+    expect(screen.getByTestId("song-info").textContent).toContain("雨");
+    expect(screen.getByPlaceholderText("说一句就改后面，回车马上放")).toBeInTheDocument();
   });
 });

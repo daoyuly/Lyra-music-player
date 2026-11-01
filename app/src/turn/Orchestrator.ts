@@ -19,6 +19,7 @@ import type { ToolContextFactory } from "./toolContextFactory";
 import type { TurnCancellationManager } from "./turnCancellation";
 import type { AgentRunSink } from "./agentRunSink";
 import { parseIntent } from "../agents/intentParser";
+import { inferShift } from "../agents/shiftLogic";
 import type { ActiveIntent } from "../db/repo/activeIntentRepo";
 import * as productEventsRepo from "../db/repo/productEventsRepo";
 import {
@@ -29,6 +30,18 @@ import {
 } from "../lib/formatError";
 import { lyraLog } from "../lib/lyraLog";
 import { writeTrace } from "../reasoning/writeTrace";
+import { parseShowCommand } from "../show/parseShowCommand";
+import { formatShowClock } from "../show/context";
+import { formatShowScript, type ShowBeat, type ShowLine } from "../show/rundown";
+import type { ShowBrief } from "../show/ShowAgent";
+
+/** How long the two hosts' lines stay on screen before the song starts. */
+export const SHOW_TALK_BEFORE_PLAY_MS = 3200;
+
+/** Songs that must not repeat inside one continuous playback. */
+export const SESSION_NO_REPEAT_WINDOW = 24;
+/** How far down the intent + emotion ranking a session queue may reach. */
+export const SESSION_RANK_LIMIT = 10_000;
 
 export type SoulStoreLike = {
   load(): Promise<SoulState>;
@@ -40,9 +53,19 @@ type SoulStore = SoulStoreLike;
 export type OrchestratorState =
   | { kind: "idle" }
   | { kind: "thinking"; user_utterance: string }
-  | { kind: "playing"; turn: DialogueTurn; song: LibraryTrack }
+  | { kind: "playing"; turn: DialogueTurn; song: LibraryTrack; aside?: string }
   | { kind: "error"; message: string }
-  | { kind: "proactive-pending"; intent: ProactiveIntent; song: LibraryTrack; rationale: string };
+  | { kind: "proactive-pending"; intent: ProactiveIntent; song: LibraryTrack; rationale: string }
+  | {
+      kind: "show-talk";
+      guestName: string;
+      lines: ShowLine[];
+      song: LibraryTrack;
+      beatIndex: number;
+      beatCount: number;
+      pad: PAD;
+      note?: string;
+    };
 
 export type OrchestratorDeps = {
   emotion: EmotionAgent;
@@ -83,6 +106,24 @@ export type OrchestratorDeps = {
     save(intent: ActiveIntent): Promise<void>;
     clear(): Promise<void>;
   };
+  /** Writes a two-host rundown. Absent in tests that never start a show. */
+  showAgent?: { write(brief: ShowBrief): Promise<ShowBeat[]> };
+  /** Rewrites host lines with song context and a rotating color. Optional. */
+  showBoundary?: {
+    color(input: {
+      topic: string;
+      beats: ShowBeat[];
+      songs: ShowBrief["candidates"];
+      toneOffset?: number;
+    }): Promise<ShowBeat[]>;
+  };
+  /** Speaks the current beat. When absent, the beat waits on a timer. */
+  showVoice?: {
+    speak(lines: ShowLine[]): Promise<void>;
+    cancel(): void;
+  };
+  /** Cached weather line, or null when location/weather is unknown. */
+  readWeather?: () => Promise<string | null>;
   /** DJ agent track profiles for candidate display + intent filtering. */
   trackProfilesRepo?: {
     getBatch(
@@ -144,15 +185,34 @@ export class Orchestrator {
     padAtTime: PAD;
     startedAt: number;
   } | null = null;
-  /** Rolling window of song ids we've just picked (oldest→newest). Used by
-   *  auto-advance to exclude recently played tracks so the recommender can't
-   *  loop on the same song when the emotion + pseudoTarget stay constant.
-   *  Session-scoped: not persisted across app restarts. */
+  /** Rolling window of song ids we've just picked (oldest→newest).
+   *  Auto-advance will not play any of these again until 24 other songs
+   *  have passed (or the library is smaller than that). Session-scoped. */
   private recentSongIds: string[] = [];
-  private static readonly RECENT_EXCLUDE_WINDOW = 5;
+  /** Remaining songs for this intent + emotion bucket, already sorted. */
+  private sessionQueue: LibraryTrack[] = [];
+  private sessionRankKey = "";
+  /** Next continuation song, chosen while the current one is still playing. */
+  private preparedNext: { song: LibraryTrack; rankKey: string } | null = null;
+  private prepareGen = 0;
+  private queueEpoch = 0;
+  private prepareTask: Promise<void> | null = null;
   /** Sticky listening intent (e.g. 粤语). Loaded lazily from activeIntentRepo. */
   private activeIntent: ActiveIntent | null = null;
   private activeIntentLoaded = false;
+  /** Ignores the completion event that stopping the previous song can emit. */
+  private suppressComplete = false;
+  /** Starts the current show beat after the lines have been readable. */
+  private showPlayTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bumped when speech is cancelled so a late speak() cannot start the song. */
+  private showSpeakGen = 0;
+  /** Live two-host show. Null when the listener is in ordinary chat. */
+  private show: {
+    rundown: { topic: string; guestName: string; beats: ShowBeat[] };
+    beatIndex: number;
+    songs: Map<string, LibraryTrack>;
+    emotion: CurrentEmotion;
+  } | null = null;
 
   constructor(deps: OrchestratorDeps) {
     this.deps = deps;
@@ -205,9 +265,149 @@ export class Orchestrator {
     const idx = this.recentSongIds.indexOf(songId);
     if (idx !== -1) this.recentSongIds.splice(idx, 1);
     this.recentSongIds.push(songId);
-    if (this.recentSongIds.length > Orchestrator.RECENT_EXCLUDE_WINDOW) {
+    if (this.recentSongIds.length > SESSION_NO_REPEAT_WINDOW) {
       this.recentSongIds.shift();
     }
+  }
+
+  /** Coarse mood + sticky intent. Tiny PAD drift must not rebuild the queue,
+   *  or auto-advance collapses back to "always play the current #1". */
+  private sessionRankKeyFor(emotion: import("../types").CurrentEmotion): string {
+    const bucket = (v: number) => Math.round(v * 2) / 2;
+    const c = this.activeIntent?.constraints;
+    return [
+      bucket(emotion.pad.p),
+      bucket(emotion.pad.a),
+      bucket(emotion.pad.d),
+      emotion.labels.join(","),
+      this.activeIntent?.rawText ?? "",
+      (c?.languages ?? []).join(","),
+      (c?.genres ?? []).join(","),
+      (c?.scenes ?? []).join(","),
+      (c?.artists ?? []).join(","),
+    ].join("|");
+  }
+
+  /** Drop a queued continuation. In-flight ranking must not write back. */
+  private clearSessionQueue(): void {
+    this.queueEpoch++;
+    this.prepareGen++;
+    this.preparedNext = null;
+    this.sessionQueue = [];
+    this.sessionRankKey = "";
+  }
+
+  /** Rank the library by intent then emotion, drop songs played in the last
+   *  24, and keep that order for the rest of this mood. When every remaining
+   *  song is inside the window, replay the one that has waited the longest.
+   *  Returns false when a newer clear superseded this ranking. */
+  private async rebuildSessionQueue(
+    target: string,
+    emotion: import("../types").CurrentEmotion,
+    key: string,
+  ): Promise<boolean> {
+    const epoch = this.queueEpoch;
+    const ranked = await this.deps.library.prefilter(
+      target,
+      emotion.pad,
+      SESSION_RANK_LIMIT,
+      undefined,
+      this.activeIntent ?? undefined,
+      "intent-emotion",
+    );
+    if (epoch !== this.queueEpoch) return false;
+    const recent = new Set(this.recentSongIds);
+    const eligible = ranked.filter((t) => !recent.has(t.id));
+    if (eligible.length > 0) {
+      this.sessionQueue = eligible;
+    } else if (ranked.length > 0) {
+      const age = new Map(this.recentSongIds.map((id, i) => [id, i]));
+      const oldest = [...ranked].sort(
+        (a, b) =>
+          (age.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+          (age.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+      )[0];
+      this.sessionQueue = oldest ? [oldest] : [];
+    } else {
+      this.sessionQueue = [];
+    }
+    this.sessionRankKey = key;
+    return true;
+  }
+
+  private continuationTarget(emotion: import("../types").CurrentEmotion): string {
+    return this.buildPseudoTarget(
+      "",
+      emotion.labels,
+      `${emotion.labels.join(" ")} 延续`.trim(),
+    );
+  }
+
+  /** Emotion the next song should follow once this turn ends. Uses the
+   *  predicted pad only when the song's own length lands inside the window,
+   *  so the choice made during playback matches the choice at completion. */
+  private emotionForContinuation(
+    emotion: import("../types").CurrentEmotion,
+    startedAt: number,
+    atMs: number,
+  ): import("../types").CurrentEmotion {
+    const elapsedMin = (atMs - startedAt) / 60_000;
+    const pt = emotion.predicted_trajectory;
+    if (pt !== undefined && elapsedMin >= 3 && elapsedMin <= pt.horizon_min) {
+      return {
+        pad: pt.predicted_pad,
+        labels: emotion.labels,
+        confidence: emotion.confidence,
+        source: "emotion-agent-inferred",
+      };
+    }
+    return emotion;
+  }
+
+  /** Pick the following song while the current one is audible. */
+  private schedulePrepareNext(): void {
+    const emotion = this.currentTurn?.current_emotion;
+    const startedAt = this.currentTurn?.timestamp;
+    if (!emotion || startedAt === undefined) return;
+    const gen = this.prepareGen;
+    const durationMs = this.currentSong?.duration_ms ?? 0;
+    const atEnd = startedAt + durationMs;
+    const task = this.prepareNextSong(gen, emotion, startedAt, atEnd).catch((err) => {
+      console.warn("[lyra] prepare next song failed:", err);
+    });
+    this.prepareTask = task;
+    void task.finally(() => {
+      if (this.prepareTask === task) this.prepareTask = null;
+    });
+  }
+
+  private async prepareNextSong(
+    gen: number,
+    emotion: import("../types").CurrentEmotion,
+    startedAt: number,
+    atMs: number,
+  ): Promise<void> {
+    const nextEmotion = this.emotionForContinuation(emotion, startedAt, atMs);
+    const target = this.continuationTarget(nextEmotion);
+    const key = this.sessionRankKeyFor(nextEmotion);
+    if (this.sessionQueue.length === 0 || this.sessionRankKey !== key) {
+      const ok = await this.rebuildSessionQueue(target, nextEmotion, key);
+      if (!ok || gen !== this.prepareGen) return;
+    }
+    if (gen !== this.prepareGen) return;
+    const song = this.sessionQueue[0];
+    this.preparedNext = song ? { song, rankKey: this.sessionRankKey } : null;
+  }
+
+  private async takeNextRankedSong(
+    target: string,
+    emotion: import("../types").CurrentEmotion,
+  ): Promise<LibraryTrack | null> {
+    const key = this.sessionRankKeyFor(emotion);
+    if (this.sessionQueue.length === 0 || this.sessionRankKey !== key) {
+      await this.rebuildSessionQueue(target, emotion, key);
+    }
+    return this.sessionQueue.shift() ?? null;
   }
 
   /** Hydrate sticky intent from DB once per Orchestrator lifetime. */
@@ -299,17 +499,14 @@ export class Orchestrator {
     return `${base} ${intentText}`.trim();
   }
 
-  /** Finalise the previous turn: fold events, optionally apply verbal, update soul, persist. */
+  /** Finalise the previous turn: fold events, optionally apply verbal, update soul, persist.
+   *  Clears the live turn first so a continuation can start playing while this write finishes. */
   private async finalisePreviousTurn(verbalText?: string, postPad?: PAD): Promise<void> {
     if (!this.currentTurn) return;
 
-    const { soulStore, turnRepo } = this.deps;
     let events = [...this.pendingEvents];
-
-    // If there's a verbal follow-up from the next utterance and the turn has no verbal yet
     const hasVerbal = this.currentTurn.user_reaction.verbal !== undefined
       || events.some((e) => e.kind === "verbal_next");
-
     if (verbalText !== undefined && !hasVerbal) {
       events.push({
         kind: "verbal_next",
@@ -317,18 +514,29 @@ export class Orchestrator {
         parsed_valence: "neutral",
       });
     }
-
-    // Fold all events into the turn
     const folded = foldReactionEvents(this.currentTurn, events);
+    const song = this.currentSong;
+    this.currentTurn = null;
+    this.currentSong = null;
+    this.pendingEvents = [];
+    await this.persistFinishedTurn(folded, song, postPad);
+  }
 
-    // Compute emotion delta and update soul
+  /** Write a turn that has already left the live slot. Does not touch currentTurn. */
+  private async persistFinishedTurn(
+    folded: DialogueTurn,
+    song: LibraryTrack | null,
+    postPad?: PAD,
+  ): Promise<void> {
+    const { soulStore, turnRepo } = this.deps;
+
     if (postPad !== undefined && soulStore.apply) {
+      await soulStore.load();
       const prePad = folded.current_emotion.pad;
       const delta = computeEmotionDelta(prePad, postPad);
       await soulStore.apply(delta);
     }
 
-    // Update the turn's emotion_delta if we have postPad
     const finalTurn: DialogueTurn = postPad !== undefined
       ? {
           ...folded,
@@ -336,18 +544,15 @@ export class Orchestrator {
         }
       : folded;
 
-    // Persist the updated turn
     if (turnRepo.updateTurn) {
       await turnRepo.updateTurn(finalTurn);
     }
 
-    // Detect salient moment and persist to shared_memory + memory.md
-    const currentSong = this.currentSong;
-    if (currentSong) {
+    if (song) {
       try {
         const moment = detectSalientMoment({
           turn: finalTurn,
-          song: currentSong,
+          song,
           currentTags: currentTagsFor(new Date()),
         });
         if (moment) {
@@ -366,10 +571,6 @@ export class Orchestrator {
         console.warn("[lyra] detectSalientMoment failed:", e);
       }
     }
-
-    this.currentTurn = null;
-    this.currentSong = null;
-    this.pendingEvents = [];
   }
 
   /**
@@ -407,54 +608,95 @@ export class Orchestrator {
       emotion.labels,
       pseudoTargetOverride,
     );
-    let candidates = await library.prefilter(
-      pseudoTarget,
-      emotion.pad,
-      30,
-      excludeIds,
-      this.activeIntent ?? undefined,
-    );
-    // Fallback: if excludeIds emptied the library (e.g., only one track exists
-    // and it's the one we just played), retry without the exclusion so we
-    // still play something rather than erroring.
-    if (candidates.length === 0 && excludeIds && excludeIds.size > 0) {
-      candidates = await library.prefilter(
+
+    // A new utterance starts a fresh ranking. Continuous playback keeps the
+    // queue so we walk down the list instead of re-picking the current #1.
+    const rankedPlayback = modality === "proactive-open";
+    if (!rankedPlayback) {
+      this.clearSessionQueue();
+    }
+
+    let song: LibraryTrack;
+    let chosen: {
+      song_id: string;
+      rationale: string;
+      target_profile: string;
+      needed_shift: "接住" | "点燃" | "陪着" | "打断";
+      verbal_intent?: "switch" | "repeat" | "adjust_calmer" | "adjust_livelier" | "similar" | "clear_intent" | null;
+    };
+
+    if (rankedPlayback) {
+      const next = await this.takeNextRankedSong(pseudoTarget, emotion);
+      if (!next) {
+        this.emit({
+          kind: "error",
+          message: "library is empty; add music in Settings",
+        });
+        return;
+      }
+      song = next;
+      chosen = {
+        song_id: next.id,
+        target_profile: pseudoTarget,
+        rationale: "顺着此刻的意图和情绪，往下听。",
+        needed_shift: inferShift(
+          emotion.pad,
+          emotion.confidence,
+          this.perceptionSignals.isBlurred,
+          this.perceptionSignals.skipRatio,
+          this.perceptionSignals.inputHesitation,
+        ),
+      };
+    } else {
+      let candidates = await library.prefilter(
         pseudoTarget,
         emotion.pad,
         30,
-        undefined,
+        excludeIds,
         this.activeIntent ?? undefined,
       );
-    }
-    if (candidates.length === 0) {
-      this.emit({
-        kind: "error",
-        message: "library is empty; add music in Settings",
+      // Fallback: if excludeIds emptied the library (e.g., only one track exists
+      // and it's the one we just played), retry without the exclusion so we
+      // still play something rather than erroring.
+      if (candidates.length === 0 && excludeIds && excludeIds.size > 0) {
+        candidates = await library.prefilter(
+          pseudoTarget,
+          emotion.pad,
+          30,
+          undefined,
+          this.activeIntent ?? undefined,
+        );
+      }
+      if (candidates.length === 0) {
+        this.emit({
+          kind: "error",
+          message: "library is empty; add music in Settings",
+        });
+        return;
+      }
+
+      const ctx = await this.buildCompanionContext(candidates.map((c) => c.id));
+      chosen = await companion.choose({
+        userUtterance,
+        currentEmotion: emotion,
+        soul,
+        candidates,
+        handoff: "user-spoke",
+        // Phase 3a: pass currently-playing song so verbal_intent ("换一个"/"再来一遍") works.
+        ...(this.currentSong != null ? { lastSong: this.currentSong } : {}),
+        ...ctx,
       });
-      return;
+
+      // Companion LLM may clear sticky intent when IntentParser missed the cue.
+      if (chosen.verbal_intent === "clear_intent") {
+        await this.setActiveIntent(null);
+        void productEventsRepo
+          .record("active_intent_cleared", { via: "companion_verbal_intent" })
+          .catch(() => {});
+      }
+
+      song = candidates.find((c) => c.id === chosen.song_id)!;
     }
-
-    const ctx = await this.buildCompanionContext(candidates.map((c) => c.id));
-    const chosen = await companion.choose({
-      userUtterance,
-      currentEmotion: emotion,
-      soul,
-      candidates,
-      handoff: modality === "proactive-open" ? "auto-advance" : "user-spoke",
-      // Phase 3a: pass currently-playing song so verbal_intent ("换一个"/"再来一遍") works.
-      ...(this.currentSong != null ? { lastSong: this.currentSong } : {}),
-      ...ctx,
-    });
-
-    // Companion LLM may clear sticky intent when IntentParser missed the cue.
-    if (chosen.verbal_intent === "clear_intent") {
-      await this.setActiveIntent(null);
-      void productEventsRepo
-        .record("active_intent_cleared", { via: "companion_verbal_intent" })
-        .catch(() => {});
-    }
-
-    const song = candidates.find((c) => c.id === chosen.song_id)!;
 
     const turnId = idGen();
     const turnTs = clock();
@@ -511,6 +753,7 @@ export class Orchestrator {
     }
 
     this.emit({ kind: "playing", turn, song });
+    this.schedulePrepareNext();
   }
 
   /**
@@ -532,7 +775,13 @@ export class Orchestrator {
    */
   async fulfillProactive(intent: ProactiveIntent): Promise<void> {
     const kind = this.state.kind;
-    if (kind === "thinking" || kind === "playing" || kind === "proactive-pending" || this.proactiveInFlight) {
+    if (
+      kind === "thinking" ||
+      kind === "playing" ||
+      kind === "proactive-pending" ||
+      kind === "show-talk" ||
+      this.proactiveInFlight
+    ) {
       console.debug(
         `[lyra] fulfillProactive skipped: busy state=${kind} inFlight=${this.proactiveInFlight} kind=${intent.kind}`,
       );
@@ -589,6 +838,25 @@ export class Orchestrator {
   }
 
   async onUserInput(text: string): Promise<void> {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      if (this.state.kind === "show-talk") await this.playCurrentShowBeat();
+      return;
+    }
+    const showCmd = parseShowCommand(trimmed);
+    if (showCmd?.kind === "off") {
+      this.endShow();
+      return;
+    }
+    if (showCmd?.kind === "start") {
+      await this.startShow(showCmd.topic, showCmd.guestName);
+      return;
+    }
+    if (this.show && (this.state.kind === "show-talk" || this.state.kind === "playing")) {
+      await this.rewriteShowTail(trimmed);
+      return;
+    }
+
     const emotionAgent = this.deps.emotion;
 
     // If we have a proactive-pending intent, commit it as a real turn first
@@ -815,24 +1083,23 @@ export class Orchestrator {
   }
 
   /**
-   * Song played to completion. Fold the `complete` event into the current
-   * turn, finalise it (soul mood update, Salient Moment detection), then
-   * auto-advance to the next song using the ended turn's emotion as the
-   * baseline. "Prediction" in v0.1 is honestly "carry the previous emotion
-   * forward" — soul.dynamic_mood has already been shifted by the delta.
-   *
-   * The user experience is: song ends → tiny "…" thinking state → new
-   * song plays. Nothing auto-advances if there's no `currentTurn` (i.e.,
-   * we're in idle/error state and the event arrived stale).
+   * Song played to completion. The next track was chosen while this one was
+   * still playing, so it starts before the finished turn is saved.
+   * Nothing auto-advances if there's no `currentTurn` (stale event).
    */
   async onSongComplete(): Promise<void> {
+    if (this.suppressComplete) return;
     if (!this.currentTurn) return;
 
-    // Capture the ended song id BEFORE finalisePreviousTurn wipes currentSong,
-    // so auto-advance can exclude it from candidates and we don't loop on the
-    // same track (with same emotion + same pseudoTarget, prefilter otherwise
-    // ranks the just-played song first every time).
-    const endedSongId = this.currentSong?.id ?? null;
+    if (this.show && this.show.beatIndex + 1 < this.show.rundown.beats.length) {
+      await this.advanceShowToNextTalk();
+      return;
+    }
+    if (this.show && (await this.extendShow())) {
+      await this.advanceShowToNextTalk();
+      return;
+    }
+    this.show = null;
 
     // Emit perception complete event (best-effort, optional bus).
     try {
@@ -848,59 +1115,97 @@ export class Orchestrator {
 
     this.recordShiftFeedback("complete");
 
-    // Fold complete event into current turn's reaction
     this.pendingEvents.push({ kind: "complete" });
-    this.currentTurn = foldReactionEvents(this.currentTurn, this.pendingEvents);
+    const endedTurn = foldReactionEvents(this.currentTurn, this.pendingEvents);
     this.pendingEvents = [];
-
-    // Remember what emotion we were on so the next turn can continue from it
-    const endedEmotion = this.currentTurn.current_emotion;
-    // Capture timestamp before finalisePreviousTurn clears currentTurn
-    const turnTimestamp = this.currentTurn.timestamp;
-
-    // Emit thinking so UI shows "…" while we pick the next song
-    this.emit({ kind: "thinking", user_utterance: "" });
+    const endedSong = this.currentSong;
+    const endedEmotion = endedTurn.current_emotion;
+    const turnTimestamp = endedTurn.timestamp;
 
     try {
-      // Finalise: no verbal (user is silent), no emotion shift (no new signal)
-      await this.finalisePreviousTurn(undefined, endedEmotion.pad);
+      if (this.prepareTask) await this.prepareTask;
 
-      // If endedEmotion carries a predicted_trajectory and the elapsed time
-      // since the turn started falls within the prediction window, use the
-      // predicted_pad as the baseline emotion for the next turn.
       const clock = this.deps.clock ?? Date.now;
       const now = clock();
-      const elapsed_min = (now - turnTimestamp) / 60_000;
-      const pt = endedEmotion.predicted_trajectory;
-      const baseEmotion: import("../types").CurrentEmotion =
-        pt !== undefined && elapsed_min >= 3 && elapsed_min <= pt.horizon_min
-          ? {
-              pad: pt.predicted_pad,
-              labels: endedEmotion.labels,
-              confidence: endedEmotion.confidence,
-              source: "emotion-agent-inferred",
-              // predicted_trajectory intentionally omitted — it is stale after use
-            }
-          : endedEmotion;
+      const baseEmotion = this.emotionForContinuation(endedEmotion, turnTimestamp, now);
+      const pseudoTarget = this.continuationTarget(baseEmotion);
+      const key = this.sessionRankKeyFor(baseEmotion);
 
-      // Continue the flow: use the baseline emotion, empty utterance, proactive-open modality
-      await this.runTurnWithEmotion(
-        baseEmotion,
-        "",
-        "proactive-open",
-        // For pseudo-target we lean on the baseline emotion's labels + a hint
-        `${baseEmotion.labels.join(" ")} 延续`.trim(),
-        // Exclude the rolling window (last N picked songs) — a single-song
-        // exclusion isn't enough when the recommender oscillates A→B→A→B or
-        // when only a few candidates match the constant emotion/pseudoTarget.
-        // If this empties the candidate pool, runTurnWithEmotion falls back
-        // to the unrestricted prefilter (existing safety net).
-        this.recentSongIds.length > 0
-          ? new Set(this.recentSongIds)
-          : endedSongId
-            ? new Set([endedSongId])
-            : undefined,
+      let song: LibraryTrack | null = null;
+      if (
+        this.preparedNext &&
+        this.preparedNext.rankKey === key &&
+        this.sessionQueue[0]?.id === this.preparedNext.song.id
+      ) {
+        song = this.sessionQueue.shift() ?? null;
+        this.preparedNext = null;
+      } else {
+        this.preparedNext = null;
+        song = await this.takeNextRankedSong(pseudoTarget, baseEmotion);
+      }
+      if (!song) {
+        this.currentTurn = null;
+        this.currentSong = null;
+        this.emit({
+          kind: "error",
+          message: "library is empty; add music in Settings",
+        });
+        return;
+      }
+
+      const { turnRepo, audio } = this.deps;
+      const idGen = this.deps.idGen ?? (() => crypto.randomUUID());
+      const turnId = idGen();
+      const neededShift = inferShift(
+        baseEmotion.pad,
+        baseEmotion.confidence,
+        this.perceptionSignals.isBlurred,
+        this.perceptionSignals.skipRatio,
+        this.perceptionSignals.inputHesitation,
       );
+      const turn: DialogueTurn = {
+        id: turnId,
+        timestamp: now,
+        current_emotion: baseEmotion,
+        user_utterance: { modality: "proactive-open", content: "" },
+        agent_response: {
+          song_id: song.id,
+          rationale: "顺着此刻的意图和情绪，往下听。",
+          target_profile: pseudoTarget,
+        },
+        user_reaction: {
+          behavioral: {
+            listen_duration_ms: 0,
+            completed: false,
+            skipped: false,
+            repeated: 0,
+            volume_delta: 0,
+          },
+          silence_positive: false,
+        },
+        emotion_delta: ZERO_PAD,
+      };
+
+      await audio.playFile(song.path, song.duration_ms ?? null);
+
+      this.currentShiftMeta = {
+        turnId,
+        shift: neededShift,
+        padAtTime: baseEmotion.pad,
+        startedAt: now,
+      };
+      this.currentTurn = turn;
+      this.currentSong = song;
+      this.pendingEvents = [];
+      this.trackSongPicked(song.id);
+      if (this.activeIntent?.persistence === "once") {
+        await this.setActiveIntent(null);
+      }
+      this.emit({ kind: "playing", turn, song });
+
+      await this.persistFinishedTurn(endedTurn, endedSong, endedEmotion.pad);
+      await turnRepo.insertTurn(turn);
+      this.schedulePrepareNext();
     } catch (err) {
       const code = classifyError(err);
       const detail = formatErrorDetail(err);
@@ -923,6 +1228,373 @@ export class Orchestrator {
       });
       this.emit({ kind: "error", message: userFacingErrorMessage(err) });
     }
+  }
+
+  private clearShowPlayTimer(): void {
+    if (this.showPlayTimer !== null) {
+      clearTimeout(this.showPlayTimer);
+      this.showPlayTimer = null;
+    }
+  }
+
+  private cancelShowSpeech(): void {
+    this.showSpeakGen += 1;
+    this.clearShowPlayTimer();
+    this.deps.showVoice?.cancel();
+  }
+
+  private armShowPlayTimer(): void {
+    this.clearShowPlayTimer();
+    if (this.state.kind !== "show-talk") return;
+    this.showPlayTimer = setTimeout(() => {
+      this.showPlayTimer = null;
+      void this.playCurrentShowBeat();
+    }, SHOW_TALK_BEFORE_PLAY_MS);
+  }
+
+  private armShowPlay(): void {
+    this.clearShowPlayTimer();
+    if (this.state.kind !== "show-talk") return;
+    const voice = this.deps.showVoice;
+    if (voice) {
+      const gen = this.showSpeakGen;
+      const lines = this.state.lines;
+      void voice.speak(lines).then(
+        () => {
+          if (gen !== this.showSpeakGen || this.state.kind !== "show-talk") return;
+          void this.playCurrentShowBeat();
+        },
+        () => {
+          if (gen !== this.showSpeakGen || this.state.kind !== "show-talk") return;
+          this.armShowPlayTimer();
+        },
+      );
+      return;
+    }
+    this.armShowPlayTimer();
+  }
+
+  private endShow(): void {
+    this.cancelShowSpeech();
+    const had = this.show !== null;
+    this.show = null;
+    if (!had) return;
+    if (this.state.kind === "show-talk") {
+      this.emit({ kind: "idle" });
+      return;
+    }
+    if (this.state.kind === "playing") {
+      this.emit({
+        kind: "playing",
+        turn: this.state.turn,
+        song: this.state.song,
+        aside: "这期到这里。后面我自己接着放。",
+      });
+    }
+  }
+
+  private async startShow(topic: string, guestName: string): Promise<void> {
+    const trimmed = topic.trim();
+    if (!trimmed) {
+      this.emit({ kind: "error", message: "给这期一个题目" });
+      return;
+    }
+    if (!this.deps.showAgent) {
+      this.emit({ kind: "error", message: "节目还没接上" });
+      return;
+    }
+
+    this.cancelShowSpeech();
+    this.emit({ kind: "thinking", user_utterance: `/show ${trimmed}` });
+    this.suppressComplete = true;
+    try {
+      try {
+        await this.deps.audio.stop();
+      } catch {
+        /* nothing was playing */
+      }
+      await this.finalisePreviousTurn(trimmed);
+    } finally {
+      this.suppressComplete = false;
+    }
+    this.show = null;
+    this.clearSessionQueue();
+
+    try {
+      const emotion = await this.deps.emotion.analyze({ userUtterance: trimmed });
+      const blended = blendEmotionWithBias(emotion, this.perceptionBias);
+      const candidates = await this.deps.library.prefilter(trimmed, blended.pad, 30);
+      if (candidates.length === 0) {
+        this.emit({ kind: "error", message: "library is empty; add music in Settings" });
+        return;
+      }
+      const beats = await this.writeShowBeats(trimmed, guestName, blended, candidates);
+      if (beats.length === 0) {
+        this.emit({ kind: "error", message: "这期没有能放的歌" });
+        return;
+      }
+      this.show = {
+        rundown: { topic: trimmed, guestName, beats },
+        beatIndex: 0,
+        songs: new Map(candidates.map((song) => [song.id, song])),
+        emotion: blended,
+      };
+      this.emitShowTalk();
+    } catch (err) {
+      this.emit({ kind: "error", message: userFacingErrorMessage(err) });
+    }
+  }
+
+  private async rewriteShowTail(steer: string): Promise<void> {
+    const session = this.show;
+    if (!session || !this.deps.showAgent) return;
+    const playing = this.state.kind === "playing" ? this.state : null;
+    const from = playing ? session.beatIndex + 1 : session.beatIndex;
+    const kept = session.rundown.beats.slice(0, from);
+    const used = new Set(kept.map((beat) => beat.song_id));
+    if (!playing) {
+      this.cancelShowSpeech();
+      this.emit({ kind: "thinking", user_utterance: steer });
+    }
+    try {
+      const candidates = await this.deps.library.prefilter(
+        `${session.rundown.topic} ${steer}`,
+        session.emotion.pad,
+        30,
+        used,
+      );
+      const fresh = candidates.filter((song) => !used.has(song.id));
+      if (fresh.length === 0) {
+        this.restoreShowSurface(playing, "后面没有别的歌了");
+        return;
+      }
+      const beats = await this.writeShowBeats(
+        session.rundown.topic,
+        session.rundown.guestName,
+        session.emotion,
+        fresh,
+        steer,
+        false,
+        kept.length,
+      );
+      if (beats.length === 0) {
+        this.restoreShowSurface(playing, "这句我没接住，节目还在");
+        return;
+      }
+      for (const song of fresh) session.songs.set(song.id, song);
+      session.rundown.beats = [...kept, ...beats];
+      if (playing) {
+        this.emit({
+          kind: "playing",
+          turn: playing.turn,
+          song: playing.song,
+          aside: "后半段按你刚才的话改了。",
+        });
+        return;
+      }
+      session.beatIndex = from;
+      this.emitShowTalk();
+    } catch (err) {
+      this.restoreShowSurface(playing, userFacingErrorMessage(err));
+    }
+  }
+
+  private restoreShowSurface(
+    playing: Extract<OrchestratorState, { kind: "playing" }> | null,
+    note: string,
+  ): void {
+    if (playing) {
+      this.emit({ kind: "playing", turn: playing.turn, song: playing.song, aside: note });
+      return;
+    }
+    this.emitShowTalk(note);
+  }
+
+  /** Another segment of the same show. False when nothing new can be written. */
+  private async extendShow(): Promise<boolean> {
+    const session = this.show;
+    if (!session || !this.deps.showAgent) return false;
+    const used = new Set(session.rundown.beats.map((beat) => beat.song_id));
+    try {
+      const candidates = await this.deps.library.prefilter(
+        session.rundown.topic,
+        session.emotion.pad,
+        30,
+        used,
+      );
+      const fresh = candidates.filter((song) => !used.has(song.id));
+      if (fresh.length === 0) return false;
+      const beats = await this.writeShowBeats(
+        session.rundown.topic,
+        session.rundown.guestName,
+        session.emotion,
+        fresh,
+        undefined,
+        true,
+        session.rundown.beats.length,
+      );
+      if (beats.length === 0) return false;
+      for (const song of fresh) session.songs.set(song.id, song);
+      session.rundown.beats = [...session.rundown.beats, ...beats];
+      return true;
+    } catch (err) {
+      console.warn("[lyra] show extend failed:", err);
+      return false;
+    }
+  }
+
+  private async writeShowBeats(
+    topic: string,
+    guestName: string,
+    emotion: CurrentEmotion,
+    candidates: LibraryTrack[],
+    steer?: string,
+    continuing = false,
+    toneOffset = 0,
+  ): Promise<ShowBeat[]> {
+    const ctx = await this.buildCompanionContext(candidates.map((song) => song.id));
+    const clock = this.deps.clock ?? Date.now;
+    const weather = (await this.deps.readWeather?.()) ?? null;
+    const songs = candidates.map((song) => this.showCandidate(song, ctx.candidateProfiles));
+    const beats = await this.deps.showAgent!.write({
+      topic,
+      guestName,
+      ...(steer ? { steer } : {}),
+      ...(continuing ? { continuing: true } : {}),
+      when: formatShowClock(new Date(clock())),
+      weather,
+      emotionLabels: emotion.labels,
+      pad: emotion.pad,
+      ...(ctx.livingPortrait ? { livingPortrait: ctx.livingPortrait } : {}),
+      facts: (ctx.topFacts ?? []).map((fact) => ({
+        tags: fact.tags,
+        conclusion: fact.conclusion,
+      })),
+      candidates: songs,
+    });
+    if (beats.length === 0 || !this.deps.showBoundary) return beats;
+    try {
+      return await this.deps.showBoundary.color({ topic, beats, songs, toneOffset });
+    } catch (err) {
+      console.warn("[lyra] show boundary failed:", err);
+      return beats;
+    }
+  }
+
+  private showCandidate(
+    song: LibraryTrack,
+    profiles: Map<string, import("../db/repo/trackProfilesRepo").TrackProfile> | undefined,
+  ): ShowBrief["candidates"][number] {
+    const profile = profiles?.get(song.id);
+    return {
+      id: song.id,
+      title: song.title ?? "",
+      artist: song.artist ?? "",
+      ...(profile?.language ? { language: profile.language } : {}),
+      ...(profile?.one_liner ? { oneLiner: profile.one_liner } : {}),
+      ...(profile?.genres?.length ? { genres: profile.genres.slice(0, 3) } : {}),
+      ...(profile?.mood?.length ? { mood: profile.mood.slice(0, 3) } : {}),
+      ...(profile?.scenes?.length ? { scenes: profile.scenes.slice(0, 3) } : {}),
+      ...(profile?.era ? { era: profile.era } : {}),
+      ...(profile?.energy_check ? { energy: profile.energy_check } : {}),
+    };
+  }
+
+  private emitShowTalk(note?: string): void {
+    const session = this.show;
+    if (!session) return;
+    const beat = session.rundown.beats[session.beatIndex];
+    const song = beat ? session.songs.get(beat.song_id) : undefined;
+    if (!beat || !song) {
+      this.emit({ kind: "error", message: "这期没有能放的歌" });
+      return;
+    }
+    this.emit({
+      kind: "show-talk",
+      guestName: session.rundown.guestName,
+      lines: beat.lines,
+      song,
+      beatIndex: session.beatIndex,
+      beatCount: session.rundown.beats.length,
+      pad: session.emotion.pad,
+      ...(note ? { note } : {}),
+    });
+    this.armShowPlay();
+  }
+
+  private async playCurrentShowBeat(): Promise<void> {
+    this.cancelShowSpeech();
+    const session = this.show;
+    if (!session || this.state.kind !== "show-talk") return;
+    const beat = session.rundown.beats[session.beatIndex];
+    if (!beat) return;
+    const song = session.songs.get(beat.song_id);
+    if (!song) {
+      this.emit({ kind: "error", message: "这期没有能放的歌" });
+      return;
+    }
+    const clock = this.deps.clock ?? Date.now;
+    const idGen = this.deps.idGen ?? (() => crypto.randomUUID());
+    const turn: DialogueTurn = {
+      id: idGen(),
+      timestamp: clock(),
+      current_emotion: session.emotion,
+      user_utterance: { modality: "text", content: session.rundown.topic },
+      agent_response: {
+        song_id: song.id,
+        rationale: formatShowScript(beat.lines, session.rundown.guestName),
+        target_profile: session.rundown.topic,
+      },
+      user_reaction: {
+        behavioral: {
+          listen_duration_ms: 0,
+          completed: false,
+          skipped: false,
+          repeated: 0,
+          volume_delta: 0,
+        },
+        silence_positive: false,
+      },
+      emotion_delta: ZERO_PAD,
+    };
+    await this.deps.turnRepo.insertTurn(turn);
+    await this.deps.audio.playFile(song.path, song.duration_ms ?? null);
+    this.currentShiftMeta = {
+      turnId: turn.id,
+      shift: "陪着",
+      padAtTime: session.emotion.pad,
+      startedAt: turn.timestamp,
+    };
+    this.currentTurn = turn;
+    this.currentSong = song;
+    this.pendingEvents = [];
+    this.trackSongPicked(song.id);
+    this.emit({ kind: "playing", turn, song });
+  }
+
+  private async advanceShowToNextTalk(): Promise<void> {
+    if (!this.currentTurn || !this.show) return;
+    try {
+      const clockFn = this.deps.clock ?? Date.now;
+      this.deps.eventBus?.emit({
+        kind: "complete",
+        at: clockFn(),
+        turnId: this.currentTurn.id,
+      });
+    } catch {
+      /* bus errors are non-fatal */
+    }
+    this.recordShiftFeedback("complete");
+    this.pendingEvents.push({ kind: "complete" });
+    const endedTurn = foldReactionEvents(this.currentTurn, this.pendingEvents);
+    const endedSong = this.currentSong;
+    const endedPad = endedTurn.current_emotion.pad;
+    this.pendingEvents = [];
+    this.currentTurn = null;
+    this.currentSong = null;
+    this.show.beatIndex += 1;
+    this.emitShowTalk();
+    await this.persistFinishedTurn(endedTurn, endedSong, endedPad);
   }
 }
 

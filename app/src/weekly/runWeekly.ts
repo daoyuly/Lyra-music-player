@@ -1,6 +1,6 @@
 import { rolling7dWindow, filenameFor, resolveWeeklyDir } from "./weeklyPaths";
 import { collectWindow } from "./dataGather";
-import { render, type WeeklyLetterJson } from "./weeklyRenderer";
+import { letterOpening, render, type WeeklyLetterJson } from "./weeklyRenderer";
 import type { WeeklyAgent } from "./WeeklyAgent";
 import type { WeeklySnapshotRow } from "../db/repo/weeklyRepo";
 
@@ -26,7 +26,14 @@ export type RunWeeklyDeps = {
 
 export type RunWeeklyResult =
   | { skipped: true; reason: "sparse_week" | "auto_disabled" }
-  | { skipped: false; html_path: string; fallback: boolean; html: string };
+  | {
+      skipped: false;
+      html_path: string;
+      fallback: boolean;
+      html: string;
+      /** First thing Lyra can say about this letter. */
+      greeting: string;
+    };
 
 export async function runWeekly(opts: {
   now: Date;
@@ -92,5 +99,11 @@ export async function runWeekly(opts: {
     fallback: fallback ? 1 : 0,
   });
 
-  return { skipped: false, html_path, fallback, html };
+  return {
+    skipped: false,
+    html_path,
+    fallback,
+    html,
+    greeting: letterOpening(letter, fallback),
+  };
 }

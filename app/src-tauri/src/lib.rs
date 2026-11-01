@@ -6,6 +6,7 @@ pub mod library_scan;
 pub mod lyrics;
 pub mod secrets;
 pub mod tray;
+pub mod tts;
 pub mod weekly;
 
 use std::sync::Arc;
@@ -16,6 +17,7 @@ use tray::{TrayController, TrayState};
 pub struct AppState {
     pub audio: Arc<audio::AudioPlayer>,
     pub dynamic_volume: Arc<dynamic_volume::DynamicVolumeController>,
+    pub tts: Arc<tts::Tts>,
 }
 
 #[tauri::command]
@@ -66,9 +68,24 @@ async fn audio_is_paused(state: State<'_, AppState>) -> Result<bool, String> {
 }
 
 #[tauri::command]
+async fn audio_spectrum(state: State<'_, AppState>) -> Result<audio::PlaybackSpectrum, String> {
+    Ok(state.audio.spectrum())
+}
+
+#[tauri::command]
 async fn audio_set_volume(state: State<'_, AppState>, volume: f32) -> Result<(), String> {
     state.audio.set_volume(volume);
     Ok(())
+}
+
+#[tauri::command]
+async fn tts_speak(state: State<'_, AppState>, lines: Vec<tts::TtsLine>) -> Result<(), String> {
+    Arc::clone(&state.tts).speak(lines).await
+}
+
+#[tauri::command]
+fn tts_cancel(state: State<'_, AppState>) {
+    state.tts.cancel();
 }
 
 /// 打开动态音量。首次调用会请求 macOS 辅助功能权限;权限未给时监听线程静默退出,
@@ -299,10 +316,12 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            let player = audio::AudioPlayer::new().expect("audio init");
+            let player = Arc::new(audio::AudioPlayer::new().expect("audio init"));
+            let tts = Arc::new(tts::Tts::new(Arc::clone(&player)));
             app.manage(AppState {
-                audio: Arc::new(player),
+                audio: player,
                 dynamic_volume: Arc::new(dynamic_volume::DynamicVolumeController::new()),
+                tts,
             });
             let tray_ctrl = TrayController::new(&app.handle()).expect("tray init");
             app.manage(TrayState(tray_ctrl));
@@ -325,9 +344,12 @@ pub fn run() {
             audio_pause,
             audio_resume,
             audio_is_paused,
+            audio_spectrum,
             audio_set_volume,
             dynamic_volume_enable,
             dynamic_volume_disable,
+            tts_speak,
+            tts_cancel,
             secret_set,
             secret_get,
             secret_delete,

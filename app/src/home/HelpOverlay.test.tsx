@@ -25,6 +25,7 @@ describe("HelpOverlay", () => {
     expect(overlay.textContent).toContain("/stats");
     expect(overlay.textContent).toContain("/explorer");
     expect(overlay.textContent).toContain("/reload-musics");
+    expect(overlay.textContent).toContain("/show");
   });
 
   it("uses first-person voice (「我」, not 「她」)", () => {

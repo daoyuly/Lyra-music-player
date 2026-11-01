@@ -19,6 +19,7 @@ import {
   pausePlayback,
   resumePlayback,
   isPaused,
+  readSpectrum,
 } from "./player";
 
 beforeEach(() => {
@@ -79,6 +80,17 @@ describe("audio/player", () => {
   it("playFile propagates errors from Rust", async () => {
     invokeMock.mockRejectedValueOnce("not initialized");
     await expect(playFile("/x")).rejects.toBe("not initialized");
+  });
+
+  it("readSpectrum asks Rust for the live bands", async () => {
+    invokeMock.mockResolvedValueOnce({ low: 0.2, mid: 0.4, high: 0.1, pulse: 0 });
+    await expect(readSpectrum()).resolves.toEqual({
+      low: 0.2,
+      mid: 0.4,
+      high: 0.1,
+      pulse: 0,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("audio_spectrum");
   });
 
   it("onSongComplete subscribes to the audio-complete event and forwards the payload id", async () => {

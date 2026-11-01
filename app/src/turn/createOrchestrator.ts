@@ -9,6 +9,11 @@ import * as libraryFeaturesRepo from "../db/repo/libraryFeaturesRepo";
 import * as activeIntentRepo from "../db/repo/activeIntentRepo";
 import * as trackProfilesRepo from "../db/repo/trackProfilesRepo";
 import { playFile, stopPlayback } from "../audio/player";
+import { ShowAgent } from "../show/ShowAgent";
+import { BoundaryAgent } from "../show/BoundaryAgent";
+import { createSystemShowVoice, type ShowVoice } from "../show/voices";
+import { describeWeather } from "../show/context";
+import { getCachedWeather } from "../perception/weather";
 import { registry } from "../providers/registry";
 import { bus as perceptionBus } from "../perception/events";
 // Phase 2 pi wiring
@@ -26,7 +31,10 @@ import * as libraryRepo from "../db/repo/libraryRepo";
  * Returns null when no provider is registered (no API key configured),
  * which HomeView renders as the cold-boot "needs API key" state.
  */
-export function createDefaultOrchestrator(): Orchestrator | null {
+export function createDefaultOrchestrator(opts?: {
+  /** Shared with the air desk so a bulletin and a show use one microphone. */
+  showVoice?: ShowVoice;
+}): Orchestrator | null {
   if (registry.list().length === 0) {
     return null;
   }
@@ -103,6 +111,14 @@ export function createDefaultOrchestrator(): Orchestrator | null {
       clear: () => activeIntentRepo.clear(),
     },
     trackProfilesRepo: { getBatch: (ids) => trackProfilesRepo.getBatch(ids) },
+    showAgent: new ShowAgent({ provider: companionProvider }),
+    showBoundary: new BoundaryAgent({ provider: companionProvider }),
+    showVoice: opts?.showVoice ?? createSystemShowVoice(),
+    readWeather: async () => {
+      const weather = getCachedWeather();
+      if (!weather) return null;
+      return describeWeather(weather.weatherCode, weather.temperatureC);
+    },
     agentRunSink,
   });
 }

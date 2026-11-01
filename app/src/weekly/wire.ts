@@ -6,7 +6,7 @@ import * as libraryRepo from "../db/repo/libraryRepo";
 import * as weeklyRepo from "../db/repo/weeklyRepo";
 import { getSecret, SECRET_KEYS } from "../settings/secrets";
 import { WeeklyAgent } from "./WeeklyAgent";
-import { runWeekly, type RunWeeklyDeps } from "./runWeekly";
+import { runWeekly, type RunWeeklyDeps, type RunWeeklyResult } from "./runWeekly";
 
 export async function makeWeeklyDeps(): Promise<RunWeeklyDeps> {
   const dirOverride = (await getSecret(SECRET_KEYS.weeklyDirOverride)) || null;
@@ -58,12 +58,13 @@ export async function makeWeeklyDeps(): Promise<RunWeeklyDeps> {
 
 /** Auto-trigger entry — resolves settings each call so a user toggling
  *  auto-off in Settings takes effect on the next Sunday tick. */
-export async function autoWeeklyTrigger(): Promise<void> {
+export async function autoWeeklyTrigger(): Promise<RunWeeklyResult | null> {
   try {
     const deps = await makeWeeklyDeps();
-    await runWeekly({ now: new Date(), onDemand: false, deps });
+    return await runWeekly({ now: new Date(), onDemand: false, deps });
   } catch (e) {
     console.error("[weekly] autoWeeklyTrigger error:", e);
+    return null;
   }
 }
 
